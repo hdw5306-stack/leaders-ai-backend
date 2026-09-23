@@ -1,0 +1,20 @@
+{
+  "name": "leaders-ai-backend-server",
+  "version": "2.0.0",
+  "description": "리더스 AI 비서 백엔드 서버 — 음성인식(STT) + 로그인/회원가입 + 개인 일정(카테고리별) — Railway 배포용",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "form-data": "^4.0.0",
+    "pg": "^8.12.0",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2"
+  }
+}
