@@ -10,6 +10,11 @@
  *   4) 첨부 사진/서류 분석 — 채팅 중 올린 사진(고객 서류, 상품 팜플렛 등)을
  *      OpenAI Vision(gpt-4o-mini)으로 분석해 질문에 답변. 파일은 저장하지 않고
  *      요청 처리 후 즉시 버립니다.
+ *   5) 관리자 기능(3단계 권한: 설계사/지사장/상무) — 지사장은 자기 지사 소속
+ *      설계사만 승인/관리, 상무는 전체 지사·설계사를 보고 지사·지사장 계정을
+ *      만들 수 있습니다. 약관·보상사례 공용 DB도 여기서 관리하며, 수정하면
+ *      모든 설계사 화면에 즉시 반영됩니다.
+ *   6) 지사 목록 — 회원가입 화면에서 소속 지사를 선택하는 데 사용
  *
  * Railway 같은 Node.js 호스팅에 올려서 쓰도록 만들어졌습니다
  * (m.leadersfc.co.kr은 정적 파일만 호스팅하는 카페24라 이 서버는
@@ -30,6 +35,9 @@ const FormData = require('form-data');
 const { initDb } = require('./db');
 const { router: authRoutes } = require('./auth');
 const scheduleRoutes = require('./schedule');
+const adminRoutes = require('./admin');
+const contentRoutes = require('./content');
+const branchRoutes = require('./branches');
 
 const app = express();
 app.use(express.json());
@@ -160,6 +168,15 @@ app.use('/api/auth', authRoutes);
 
 // ── 4) 개인 일정 (카테고리별, 로그인 필요) ─────────────────────
 app.use('/api/schedule', scheduleRoutes);
+
+// ── 5) 관리자 전용 기능 (승인 관리, 약관/보상사례 관리) ──────────
+app.use('/api/admin', adminRoutes);
+
+// ── 6) 약관/보상사례 읽기 (로그인한 설계사 전체) ─────────────────
+app.use('/api/content', contentRoutes);
+
+// ── 7) 지사 목록 (회원가입 화면은 로그인 전이라 인증 없이 조회 가능) ─
+app.use('/api/branches', branchRoutes);
 
 const PORT = process.env.PORT || 3000;
 
