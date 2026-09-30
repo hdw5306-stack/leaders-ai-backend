@@ -162,6 +162,87 @@ app.post('/api/tts', async (req, res) => {
   }
 });
 
+// ── 1-2) AI 상담(대화형) ────────────────────────────────────────
+// 기존에는 질문 속 특정 단어("암" 등)만 보고 미리 정해둔 답 중 하나를
+// 고르는 방식이라 "암 수술 영상 보여줘" 같은 질문에 "암 진단비 청구
+// 사례"처럼 엉뚱한 답이 나가는 문제가 있었습니다. 이제는 질문 전체를
+// OpenAI에 보내 실제 의도를 이해하고 자연스럽게 답하게 합니다.
+// 약관/보상사례/미디어 DB는 참고자료로만 함께 보내고, 답을 그 안에서
+// 찾을지, 일반 지식으로 답할지는 AI가 스스로 판단합니다.
+app.post('/api/chat', async (req, res) => {
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: 'OPENAI_API_KEY 환경변수가 설정되지 않았습니다.' });
+  }
+  const { message, termsDb, claimsDb, mediaDb } = req.body || {};
+  if (!message || !message.trim()) {
+    return res.status(400).json({ error: '질문 내용이 없습니다.' });
+  }
+
+  const systemPrompt = `당신은 보험설계사(리더스사업부)를 돕는 AI 비서입니다. 설계사가 실제 사람과 대화하듯 자유롭게 질문하므로, 표면적인 단어가 아니라 질문의 진짜 의도를 파악해서 답하세요.
+예: "암 수술하는 영상 보여줘"는 영상 재생 요청이지, 암 진단비 청구 사례를 묻는 것이 아닙니다.
+
+아래는 참고할 수 있는 사내 데이터입니다. 질문과 실제로 관련 있을 때만 활용하고, 관련 없으면 일반적인 보험 실무/의학 상식으로 답하세요. 모르면 모른다고 솔직히 답하세요.
+
+[약관 DB]
+${JSON.stringify(termsDb || [])}
+
+[보상사례 DB]
+${JSON.stringify(claimsDb || [])}
+
+[미디어(영상) DB] — 실제 영상 파일은 없는 데모이며 제목/태그만 있습니다. 사용자가 특정 영상 재생을 원하면 이 목록 중 가장 관련 있는 제목을 정확히 그대로 action에 담아주세요. 목록에 맞는 영상이 없으면 action은 null로 하고 그렇게 안내하세요.
+${JSON.stringify(mediaDb || [])}
+
+반드시 아래 JSON 형식으로만, 다른 설명 없이 답하세요 (마크다운 기호 없이 일반 문장으로):
+{
+  "reply": "화면에 보여줄 답변 (존댓말, 필요시 줄바꿈 포함)",
+  "speech": "음성으로 읽어줄 짧은 한두 문장 요약",
+  "action": null 또는 { "type": "play_media", "title": "미디어 DB의 title 값과 정확히 동일한 문자열" }
+}`;
+
+  try {
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: message },
+        ],
+        max_tokens: 700,
+        temperature: 0.4,
+      }),
+    });
+
+    if (!openaiRes.ok) {
+      const errText = await openaiRes.text();
+      console.error('AI 상담 API 오류:', errText);
+      return res.status(502).json({ error: 'AI 상담 서비스 호출에 실패했습니다.' });
+    }
+
+    const data = await openaiRes.json();
+    const raw = data.choices?.[0]?.message?.content || '{}';
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      parsed = { reply: raw, speech: raw, action: null };
+    }
+    res.json({
+      reply: parsed.reply || '죄송합니다, 답변을 만들지 못했습니다. 다시 한 번 말씀해주세요.',
+      speech: parsed.speech || parsed.reply || '',
+      action: parsed.action || null,
+    });
+  } catch (err) {
+    console.error('AI 상담 처리 중 오류:', err);
+    res.status(500).json({ error: '서버 내부 오류' });
+  }
+});
+
 // ── 2) 첨부 사진/서류 분석 (OpenAI Vision) ──────────────────────
 app.post('/api/vision', upload.single('file'), async (req, res) => {
   if (!process.env.OPENAI_API_KEY) {
