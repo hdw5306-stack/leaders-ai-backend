@@ -129,6 +129,51 @@ router.post('/login', requireDb, async (req, res) => {
   }
 });
 
+// 내 계정 정보 변경 (아이디/비밀번호를 본인이 직접 변경)
+// 상무/지사장이 임시로 만들어준 아이디·비번을, 로그인한 본인이 원하는 값으로 바꿀 수 있게 합니다.
+router.put('/me', requireDb, verifyToken, async (req, res) => {
+  const { currentPassword, newLoginId, newPassword } = req.body || {};
+  if (!currentPassword) {
+    return res.status(400).json({ error: '본인 확인을 위해 현재 비밀번호를 입력해주세요.' });
+  }
+  if (!newLoginId && !newPassword) {
+    return res.status(400).json({ error: '변경할 아이디 또는 비밀번호를 입력해주세요.' });
+  }
+  if (newPassword && newPassword.length < 6) {
+    return res.status(400).json({ error: '새 비밀번호는 6자 이상이어야 합니다.' });
+  }
+  try {
+    const result = await pool.query('SELECT id, password_hash FROM users WHERE id = $1', [req.userId]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: '계정을 찾을 수 없습니다.' });
+    }
+    const ok = await bcrypt.compare(currentPassword, result.rows[0].password_hash);
+    if (!ok) {
+      return res.status(401).json({ error: '현재 비밀번호가 일치하지 않습니다.' });
+    }
+
+    if (newLoginId) {
+      const dup = await pool.query('SELECT id FROM users WHERE login_id = $1 AND id != $2', [newLoginId, req.userId]);
+      if (dup.rows.length > 0) {
+        return res.status(409).json({ error: '이미 사용 중인 아이디입니다.' });
+      }
+    }
+
+    const newHash = newPassword ? await bcrypt.hash(newPassword, 10) : null;
+    await pool.query(
+      `UPDATE users SET
+         login_id = COALESCE($1, login_id),
+         password_hash = COALESCE($2, password_hash)
+       WHERE id = $3`,
+      [newLoginId || null, newHash, req.userId]
+    );
+    res.json({ success: true, message: '계정 정보가 변경되었습니다. 다음 로그인부터 새 정보로 접속해주세요.', loginId: newLoginId || undefined });
+  } catch (err) {
+    console.error('계정 변경 오류:', err);
+    res.status(500).json({ error: '계정 정보 변경 중 오류가 발생했습니다.' });
+  }
+});
+
 // 다른 라우터(schedule.js, admin.js)에서 재사용하는 인증 미들웨어
 function verifyToken(req, res, next) {
   const auth = req.headers.authorization || '';
