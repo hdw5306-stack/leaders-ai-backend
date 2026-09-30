@@ -4,6 +4,9 @@
  * 역할 4가지:
  *   1) 음성인식(STT) 중계 — leaders-ai-assistant.html이 iOS 등 Web Speech API
  *      미지원 환경에서 녹음한 오디오를 받아 OpenAI Whisper API로 전달
+ *   1-1) 음성 합성(TTS) — 답변을 소리로 읽어줄 때, 브라우저 자체 음성합성이
+ *      지원되지 않는 환경(카카오톡 인앱 브라우저 등)에서도 항상 동일하게
+ *      소리가 나도록 OpenAI TTS로 mp3를 만들어 내려줌
  *   2) 로그인/회원가입 — 설계사별 별도 계정 (자체 아이디/비밀번호, JWT)
  *   3) 개인 일정 저장 — 카테고리(미팅/계약/방문/개인/기타)별로 DB에 저장,
  *      로그인한 사용자 본인 것만 조회/삭제 가능
@@ -108,6 +111,53 @@ app.post('/api/stt', upload.single('audio'), async (req, res) => {
     res.json({ text: data.text || '' });
   } catch (err) {
     console.error('STT 처리 중 오류:', err);
+    res.status(500).json({ error: '서버 내부 오류' });
+  }
+});
+
+// ── 1-1) 음성 합성(TTS) ──────────────────────────────────────────
+// 브라우저 자체 음성합성(Web Speech API)은 카카오톡 인앱 브라우저 등 일부
+// 환경에서 아예 지원되지 않아 화면에 답은 뜨는데 소리만 안 나는 경우가
+// 있습니다. 그래서 답변 음성은 서버에서 OpenAI TTS로 mp3 파일을 만들어
+// 내려주는 방식을 기본으로 씁니다 — 어떤 브라우저(카카오톡 포함)에서
+// 열어도 항상 동일하게 소리가 납니다.
+app.post('/api/tts', async (req, res) => {
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: 'OPENAI_API_KEY 환경변수가 설정되지 않았습니다.' });
+  }
+  const { text, voice } = req.body || {};
+  if (!text || !text.trim()) {
+    return res.status(400).json({ error: '읽어줄 텍스트가 없습니다.' });
+  }
+  const allowedVoices = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
+  const useVoice = allowedVoices.includes(voice) ? voice : 'nova';
+
+  try {
+    const openaiRes = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'tts-1',
+        voice: useVoice,
+        input: text.slice(0, 1000), // 답변이 너무 길면 앞부분만 음성으로 읽어줍니다
+        response_format: 'mp3',
+      }),
+    });
+
+    if (!openaiRes.ok) {
+      const errText = await openaiRes.text();
+      console.error('TTS API 오류:', errText);
+      return res.status(502).json({ error: '음성 합성 서비스 호출에 실패했습니다.' });
+    }
+
+    const arrayBuffer = await openaiRes.arrayBuffer();
+    res.set('Content-Type', 'audio/mpeg');
+    res.send(Buffer.from(arrayBuffer));
+  } catch (err) {
+    console.error('TTS 처리 중 오류:', err);
     res.status(500).json({ error: '서버 내부 오류' });
   }
 });
