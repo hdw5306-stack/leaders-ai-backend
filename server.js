@@ -162,6 +162,49 @@ app.post('/api/tts', async (req, res) => {
   }
 });
 
+// 메시지 안에 포함된 간단한 HTML을 사람이 읽는 글자만 남도록 정리합니다
+// (블로그/홈페이지 글 요약 기능에서 사용)
+function extractTextFromHtml(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// 사용자가 채팅에 붙여넣은 URL(블로그/홈페이지 주소)을 서버가 직접 불러와
+// 본문 텍스트만 뽑아냅니다. 로그인/결제 등이 필요한 페이지, 접속을
+// 차단하는 사이트는 실패할 수 있고, 그 경우 AI가 솔직히 안내합니다.
+async function fetchPageText(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const r = await fetch(url, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LeadersAIBot/1.0; +https://leadersfp.co.kr)' },
+    });
+    clearTimeout(timeout);
+    if (!r.ok) return null;
+    const contentType = r.headers.get('content-type') || '';
+    if (!contentType.includes('text/html') && !contentType.includes('text')) return null;
+    const html = await r.text();
+    const text = extractTextFromHtml(html);
+    return text.slice(0, 8000); // 너무 긴 페이지는 앞부분만 사용
+  } catch (err) {
+    clearTimeout(timeout);
+    return null;
+  }
+}
+
 // ── 1-2) AI 상담(대화형) ────────────────────────────────────────
 // 기존에는 질문 속 특정 단어("암" 등)만 보고 미리 정해둔 답 중 하나를
 // 고르는 방식이라 "암 수술 영상 보여줘" 같은 질문에 "암 진단비 청구
@@ -169,6 +212,8 @@ app.post('/api/tts', async (req, res) => {
 // OpenAI에 보내 실제 의도를 이해하고 자연스럽게 답하게 합니다.
 // 약관/보상사례/미디어 DB는 참고자료로만 함께 보내고, 답을 그 안에서
 // 찾을지, 일반 지식으로 답할지는 AI가 스스로 판단합니다.
+// 메시지에 URL(블로그/홈페이지 주소)이 포함되어 있으면, 그 페이지 내용을
+// 직접 불러와 참고자료로 함께 제공해서 요약·질의응답이 가능하게 합니다.
 app.post('/api/chat', async (req, res) => {
   if (!process.env.OPENAI_API_KEY) {
     return res.status(500).json({ error: 'OPENAI_API_KEY 환경변수가 설정되지 않았습니다.' });
@@ -185,6 +230,17 @@ app.post('/api/chat', async (req, res) => {
         .slice(-12)
     : [];
 
+  // 메시지에 URL이 있으면 그 페이지 내용을 직접 불러와 참고자료로 추가합니다.
+  let pageContext = '';
+  const urlMatch = message.match(/https?:\/\/[^\s)\]]+/i);
+  if (urlMatch) {
+    const targetUrl = urlMatch[0];
+    const pageText = await fetchPageText(targetUrl);
+    pageContext = pageText
+      ? `\n\n[사용자가 알려준 웹페이지 내용 — 출처: ${targetUrl}]\n${pageText}`
+      : `\n\n[참고: 사용자가 알려준 주소(${targetUrl})를 불러오지 못했습니다 — 로그인이 필요하거나 접속을 차단하는 사이트일 수 있습니다. 이 사실을 사용자에게 솔직히 안내하세요.]`;
+  }
+
   const systemPrompt = `당신은 설계사가 업무 중에 편하게 쓰는 만능 AI 비서입니다. 보험 업무 도우미이기 이전에, ChatGPT와 똑같이 세상 모든 주제에 대해 자연스럽게 대화하고 도와줄 수 있는 범용 AI입니다. 실제 대화 중 보험 얘기가 나오는 비중은 일부일 뿐이고, 대부분은 평범한 대화·잡담·게임·일반 지식 질문이라고 생각하고 응답하세요.
 
 가장 중요한 원칙 (절대 어기지 마세요):
@@ -192,6 +248,7 @@ app.post('/api/chat', async (req, res) => {
 - 끝말잇기, 스무고개, 수수께끼 같은 말놀이를 하자고 하면 지금 바로 게임을 시작하세요. 예를 들어 끝말잇기면 당신이 먼저 단어를 하나 제시하고, 이전 대화에서 나온 단어를 기억해서 이어가세요.
 - 날씨, 시사, 계산, 상식, 번역, 글쓰기, 고민상담, 잡담 등 보험과 무관한 어떤 주제든 일반 ChatGPT처럼 적극적으로 도와주세요.
 - 아래 참고자료(약관/보상사례/영상 목록)는 질문이 "실제로" 보험 업무와 관련 있을 때만 사용하고, 그 외에는 완전히 무시하세요. 참고자료에 없는 내용이라고 모른다고 하지 말고, 당신이 알고 있는 일반 지식으로 답하세요.
+- 사용자가 메시지에 웹페이지 주소(URL)를 붙여넣으면, 아래 [사용자가 알려준 웹페이지 내용]에 그 페이지의 실제 글 내용이 들어있습니다. 이걸 바탕으로 요약하거나 질문에 답하세요. 페이지를 불러오지 못했다는 안내가 있으면 솔직히 그렇게 전달하세요.
 
 예시 (반드시 이런 식으로 응답하세요):
 - 사용자: "끝말잇기 하자" → reply: "좋아요! 제가 먼저 할게요. '사과'! 이제 '과'로 시작하는 단어를 말씀해주세요." (보험 얘기를 꺼내지 않음)
@@ -209,6 +266,7 @@ ${JSON.stringify(claimsDb || [])}
 
 [미디어(영상) DB] — 실제 영상 파일은 없는 데모이며 제목/태그만 있습니다. 사용자가 영상을 보여달라고 하면, 그중 관련 있는 제목을 1개~여러 개 골라 action.titles 배열에 정확히 그대로 담으세요 (하나를 임의로 골라 바로 재생하지 말고, 후보를 보여줘서 사용자가 직접 고르게 합니다). 관련 있는 영상이 하나도 없으면 action은 null로 하되, 딱딱하게 "준비되어 있지 않다"고만 하지 말고 지금 어떤 영상들이 있는지 안내하거나 다른 방식으로 도와줄 방법을 제안하세요.
 ${JSON.stringify(mediaDb || [])}
+${pageContext}
 
 반드시 아래 JSON 형식으로만, 다른 설명 없이 답하세요 (마크다운 기호 없이 일반 문장으로):
 {
@@ -327,6 +385,31 @@ app.use('/api/content', contentRoutes);
 
 // ── 7) 지사 목록 (회원가입 화면은 로그인 전이라 인증 없이 조회 가능) ─
 app.use('/api/branches', branchRoutes);
+
+// ── 임시: 상무(super_admin) 계정 아이디 확인용 ───────────────────
+// 비밀번호를 잊어버렸을 때 "아이디가 뭐였는지"만 확인하는 1회성 기능입니다.
+// 비밀번호는 암호화(해시)되어 있어 여기서도 알 수 없고, 아이디만 보여줍니다.
+// 아무나 들어올 수 없도록 Railway의 ADMIN_SIGNUP_CODE 값을 아는 사람만
+// 조회할 수 있게 해두었습니다. 확인이 끝나면 이 라우트는 삭제하는 것이
+// 안전합니다 (요청하시면 바로 제거해 드립니다).
+app.get('/api/debug/admins', async (req, res) => {
+  if (!process.env.DATABASE_URL) {
+    return res.status(503).json({ error: 'DB가 아직 연결되지 않았습니다.' });
+  }
+  if (!process.env.ADMIN_SIGNUP_CODE || req.query.code !== process.env.ADMIN_SIGNUP_CODE) {
+    return res.status(403).json({ error: '접근 권한이 없습니다.' });
+  }
+  try {
+    const { pool } = require('./db');
+    const result = await pool.query(
+      `SELECT name, login_id AS "loginId", role, approved FROM users WHERE role = 'super_admin' ORDER BY id`
+    );
+    res.json({ admins: result.rows });
+  } catch (err) {
+    console.error('관리자 조회 오류:', err);
+    res.status(500).json({ error: '서버 내부 오류' });
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 
