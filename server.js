@@ -210,7 +210,8 @@ async function fetchPageText(url) {
 // 로그인이 필요한 카페/SNS 글은 읽을 수 없고, 공개된 웹페이지만 대상입니다.
 // 모델은 환경변수 SEARCH_MODEL로 바꿀 수 있고, 안 되면 다음 후보로 자동 시도합니다.
 const SEARCH_TRIGGER = /검색|찾아|알아봐|알아봐줘|최신|최근|뉴스|요즘|트렌드|후기|블로그|카페|홈페이지|사이트|유튜브|sns|인스타|페이스북/i;
-async function webSearch(query, history) {
+async function webSearch(query, history, diag) {
+  diag = diag || [];
   const models = [process.env.SEARCH_MODEL, 'gpt-4.1-mini', 'gpt-4o-mini', 'gpt-5-mini'].filter(Boolean);
   const context = (history || []).slice(-4).map(h => `${h.role === 'user' ? '사용자' : '비서'}: ${h.content}`).join('\n');
   const input = `${context ? '[직전 대화]\n' + context + '\n\n' : ''}[검색 요청]\n${query}\n\n웹에서 찾아 핵심만 한국어로 정리하세요. 확인되지 않은 내용은 쓰지 마세요.`;
@@ -231,7 +232,9 @@ async function webSearch(query, history) {
       });
       clearTimeout(timer);
       if (!r.ok) {
-        console.error(`웹검색 실패(${model}):`, (await r.text()).slice(0, 300));
+        const errBody = (await r.text()).slice(0, 500);
+        console.error(`웹검색 실패(${model}):`, errBody);
+        diag.push({ model, status: r.status, error: errBody });
         continue;
       }
       const data = await r.json();
@@ -253,13 +256,33 @@ async function webSearch(query, history) {
         }
       }
       console.log(`[웹검색] ${model} 응답 수신 — 본문 ${text.length}자, 출처 ${sources.length}개, 항목: ${(data.output || []).map(o => o.type).join(',')}`);
+      diag.push({ model, status: 200, textLength: text.length, sources: sources.length, outputTypes: (data.output || []).map(o => o.type) });
       if (text) return { text: text.slice(0, 6000), sources };
     } catch (e) {
       console.error(`웹검색 오류(${model}):`, e.message);
+      diag.push({ model, exception: e.message });
     }
   }
   return null;
 }
+
+// [임시 진단용] 브라우저 주소창에서 웹검색이 되는지 바로 확인합니다. 확인 후 삭제하세요.
+// 사용: /api/debug/search?code=<관리자코드>&q=검색어
+app.get('/api/debug/search', async (req, res) => {
+  if (!process.env.ADMIN_SIGNUP_CODE || req.query.code !== process.env.ADMIN_SIGNUP_CODE) {
+    return res.status(403).json({ error: '코드가 올바르지 않습니다.' });
+  }
+  const diag = [];
+  const q = String(req.query.q || '오늘 보험 관련 최신 뉴스');
+  const found = await webSearch(q, [], diag);
+  res.json({
+    openaiKeySet: !!process.env.OPENAI_API_KEY,
+    searchModelEnv: process.env.SEARCH_MODEL || null,
+    triggerMatches: SEARCH_TRIGGER.test(q),
+    result: found ? { textPreview: found.text.slice(0, 400), sources: found.sources } : null,
+    diag,
+  });
+});
 
 // ── 1-2) AI 상담(대화형) ────────────────────────────────────────
 // 기존에는 질문 속 특정 단어("암" 등)만 보고 미리 정해둔 답 중 하나를
