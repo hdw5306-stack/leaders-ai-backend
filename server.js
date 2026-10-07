@@ -205,6 +205,60 @@ async function fetchPageText(url) {
   }
 }
 
+// ── 웹검색 (OpenAI Responses API web_search 도구) ─────────────────
+// 네이버 검색 API 키 없이, 이미 쓰고 있는 OPENAI_API_KEY만으로 동작합니다.
+// 로그인이 필요한 카페/SNS 글은 읽을 수 없고, 공개된 웹페이지만 대상입니다.
+// 모델은 환경변수 SEARCH_MODEL로 바꿀 수 있고, 안 되면 다음 후보로 자동 시도합니다.
+const SEARCH_TRIGGER = /검색|찾아|알아봐|알아봐줘|최신|최근|뉴스|요즘|트렌드|후기|블로그|카페|홈페이지|사이트|유튜브|sns|인스타|페이스북/i;
+async function webSearch(query, history) {
+  const models = [process.env.SEARCH_MODEL, 'gpt-4.1-mini', 'gpt-4o-mini', 'gpt-5-mini'].filter(Boolean);
+  const context = (history || []).slice(-4).map(h => `${h.role === 'user' ? '사용자' : '비서'}: ${h.content}`).join('\n');
+  const input = `${context ? '[직전 대화]\n' + context + '\n\n' : ''}[검색 요청]\n${query}\n\n웹에서 찾아 핵심만 한국어로 정리하세요. 확인되지 않은 내용은 쓰지 마세요.`;
+  for (const model of models) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 25000);
+      const r = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          tools: [{ type: 'web_search', user_location: { type: 'approximate', country: 'KR' } }],
+          input,
+        }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (!r.ok) {
+        console.error(`웹검색 실패(${model}):`, (await r.text()).slice(0, 300));
+        continue;
+      }
+      const data = await r.json();
+      let text = '';
+      const sources = [];
+      const seen = new Set();
+      for (const item of data.output || []) {
+        if (item.type !== 'message') continue;
+        for (const c of item.content || []) {
+          if (c.type === 'output_text') {
+            text += c.text || '';
+            for (const a of c.annotations || []) {
+              if (a.type === 'url_citation' && a.url && !seen.has(a.url)) {
+                seen.add(a.url);
+                sources.push({ title: a.title, url: a.url.replace(/[?&]utm_source=openai$/, '') });
+              }
+            }
+          }
+        }
+      }
+      if (text) return { text: text.slice(0, 6000), sources };
+    } catch (e) {
+      console.error(`웹검색 오류(${model}):`, e.message);
+    }
+  }
+  return null;
+}
+
 // ── 1-2) AI 상담(대화형) ────────────────────────────────────────
 // 기존에는 질문 속 특정 단어("암" 등)만 보고 미리 정해둔 답 중 하나를
 // 고르는 방식이라 "암 수술 영상 보여줘" 같은 질문에 "암 진단비 청구
@@ -239,6 +293,18 @@ app.post('/api/chat', async (req, res) => {
     pageContext = pageText
       ? `\n\n[사용자가 알려준 웹페이지 내용 — 출처: ${targetUrl}]\n${pageText}`
       : `\n\n[참고: 사용자가 알려준 주소(${targetUrl})를 불러오지 못했습니다 — 로그인이 필요하거나 접속을 차단하는 사이트일 수 있습니다. 이 사실을 사용자에게 솔직히 안내하세요.]`;
+  }
+
+  // URL이 없고 "검색/찾아줘/최신/뉴스" 같은 표현이 있으면 웹검색을 먼저 합니다.
+  let searchSources = [];
+  if (!urlMatch && SEARCH_TRIGGER.test(message)) {
+    const found = await webSearch(message, safeHistory);
+    if (found && found.text) {
+      searchSources = found.sources;
+      pageContext += `\n\n[웹검색 결과 — 아래 내용을 근거로 답하고, 출처는 따로 붙이므로 본문에 URL을 적지 마세요. 검색 결과에 없는 내용은 지어내지 마세요.]\n${found.text}`;
+    } else {
+      pageContext += `\n\n[참고: 웹검색을 시도했지만 결과를 가져오지 못했습니다. 최신 정보는 확인하지 못했다고 솔직히 안내하고, 아는 범위에서만 답하세요.]`;
+    }
   }
 
   const systemPrompt = `당신은 설계사가 업무 중에 편하게 쓰는 만능 AI 비서입니다. 보험 업무 도우미이기 이전에, ChatGPT와 똑같이 세상 모든 주제에 대해 자연스럽게 대화하고 도와줄 수 있는 범용 AI입니다. 실제 대화 중 보험 얘기가 나오는 비중은 일부일 뿐이고, 대부분은 평범한 대화·잡담·게임·일반 지식 질문이라고 생각하고 응답하세요.
@@ -309,8 +375,13 @@ ${pageContext}
     } catch (e) {
       parsed = { reply: raw, speech: raw, action: null };
     }
+    let replyText = parsed.reply || '죄송합니다, 답변을 만들지 못했습니다. 다시 한 번 말씀해주세요.';
+    if (searchSources.length) {
+      replyText += '\n\n📎 출처 (웹검색, 원문 확인 권장)\n' +
+        searchSources.slice(0, 5).map((s, i) => `${i + 1}. ${s.title || s.url}\n${s.url}`).join('\n');
+    }
     res.json({
-      reply: parsed.reply || '죄송합니다, 답변을 만들지 못했습니다. 다시 한 번 말씀해주세요.',
+      reply: replyText,
       speech: parsed.speech || parsed.reply || '',
       action: parsed.action || null,
     });
