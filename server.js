@@ -214,6 +214,7 @@ async function webSearch(query, history) {
   const models = [process.env.SEARCH_MODEL, 'gpt-4.1-mini', 'gpt-4o-mini', 'gpt-5-mini'].filter(Boolean);
   const context = (history || []).slice(-4).map(h => `${h.role === 'user' ? '사용자' : '비서'}: ${h.content}`).join('\n');
   const input = `${context ? '[직전 대화]\n' + context + '\n\n' : ''}[검색 요청]\n${query}\n\n웹에서 찾아 핵심만 한국어로 정리하세요. 확인되지 않은 내용은 쓰지 마세요.`;
+  console.log('[웹검색] 시작:', query.slice(0, 60), '| 후보 모델:', models.join(','));
   for (const model of models) {
     try {
       const ctrl = new AbortController();
@@ -251,6 +252,7 @@ async function webSearch(query, history) {
           }
         }
       }
+      console.log(`[웹검색] ${model} 응답 수신 — 본문 ${text.length}자, 출처 ${sources.length}개, 항목: ${(data.output || []).map(o => o.type).join(',')}`);
       if (text) return { text: text.slice(0, 6000), sources };
     } catch (e) {
       console.error(`웹검색 오류(${model}):`, e.message);
@@ -297,6 +299,7 @@ app.post('/api/chat', async (req, res) => {
 
   // URL이 없고 "검색/찾아줘/최신/뉴스" 같은 표현이 있으면 웹검색을 먼저 합니다.
   let searchSources = [];
+  console.log('[채팅] 질문:', message.slice(0, 60), '| URL있음:', !!urlMatch, '| 검색조건:', SEARCH_TRIGGER.test(message));
   if (!urlMatch && SEARCH_TRIGGER.test(message)) {
     const found = await webSearch(message, safeHistory);
     if (found && found.text) {
