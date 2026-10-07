@@ -270,24 +270,6 @@ async function webSearch(query, history, diag) {
   return weak;
 }
 
-// [임시 진단용] 브라우저 주소창에서 웹검색이 되는지 바로 확인합니다. 확인 후 삭제하세요.
-// 사용: /api/debug/search?code=<관리자코드>&q=검색어
-app.get('/api/debug/search', async (req, res) => {
-  if (!process.env.ADMIN_SIGNUP_CODE || req.query.code !== process.env.ADMIN_SIGNUP_CODE) {
-    return res.status(403).json({ error: '코드가 올바르지 않습니다.' });
-  }
-  const diag = [];
-  const q = String(req.query.q || '오늘 보험 관련 최신 뉴스');
-  const found = await webSearch(q, [], diag);
-  res.json({
-    openaiKeySet: !!process.env.OPENAI_API_KEY,
-    searchModelEnv: process.env.SEARCH_MODEL || null,
-    triggerMatches: SEARCH_TRIGGER.test(q),
-    result: found ? { textPreview: found.text.slice(0, 400), sources: found.sources } : null,
-    diag,
-  });
-});
-
 // ── 1-2) AI 상담(대화형) ────────────────────────────────────────
 // 기존에는 질문 속 특정 단어("암" 등)만 보고 미리 정해둔 답 중 하나를
 // 고르는 방식이라 "암 수술 영상 보여줘" 같은 질문에 "암 진단비 청구
@@ -486,31 +468,6 @@ app.use('/api/content', contentRoutes);
 
 // ── 7) 지사 목록 (회원가입 화면은 로그인 전이라 인증 없이 조회 가능) ─
 app.use('/api/branches', branchRoutes);
-
-// ── 임시: 상무(super_admin) 계정 아이디 확인용 ───────────────────
-// 비밀번호를 잊어버렸을 때 "아이디가 뭐였는지"만 확인하는 1회성 기능입니다.
-// 비밀번호는 암호화(해시)되어 있어 여기서도 알 수 없고, 아이디만 보여줍니다.
-// 아무나 들어올 수 없도록 Railway의 ADMIN_SIGNUP_CODE 값을 아는 사람만
-// 조회할 수 있게 해두었습니다. 확인이 끝나면 이 라우트는 삭제하는 것이
-// 안전합니다 (요청하시면 바로 제거해 드립니다).
-app.get('/api/debug/admins', async (req, res) => {
-  if (!process.env.DATABASE_URL) {
-    return res.status(503).json({ error: 'DB가 아직 연결되지 않았습니다.' });
-  }
-  if (!process.env.ADMIN_SIGNUP_CODE || req.query.code !== process.env.ADMIN_SIGNUP_CODE) {
-    return res.status(403).json({ error: '접근 권한이 없습니다.' });
-  }
-  try {
-    const { pool } = require('./db');
-    const result = await pool.query(
-      `SELECT name, login_id AS "loginId", role, approved FROM users WHERE role = 'super_admin' ORDER BY id`
-    );
-    res.json({ admins: result.rows });
-  } catch (err) {
-    console.error('관리자 조회 오류:', err);
-    res.status(500).json({ error: '서버 내부 오류' });
-  }
-});
 
 const PORT = process.env.PORT || 3000;
 
