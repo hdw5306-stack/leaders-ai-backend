@@ -212,9 +212,11 @@ async function fetchPageText(url) {
 const SEARCH_TRIGGER = /검색|찾아|알아봐|알아봐줘|최신|최근|뉴스|요즘|트렌드|후기|블로그|카페|홈페이지|사이트|유튜브|sns|인스타|페이스북/i;
 async function webSearch(query, history, diag) {
   diag = diag || [];
-  const models = [process.env.SEARCH_MODEL, 'gpt-4.1-mini', 'gpt-4o-mini', 'gpt-5-mini'].filter(Boolean);
+  const models = [process.env.SEARCH_MODEL, 'gpt-4.1-mini', 'gpt-4.1'].filter(Boolean);
+  let weak = null; // 출처 없이 끝난 결과는 보관만 하고 다음 모델로 한 번 더 시도
   const context = (history || []).slice(-4).map(h => `${h.role === 'user' ? '사용자' : '비서'}: ${h.content}`).join('\n');
-  const input = `${context ? '[직전 대화]\n' + context + '\n\n' : ''}[검색 요청]\n${query}\n\n웹에서 찾아 핵심만 한국어로 정리하세요. 확인되지 않은 내용은 쓰지 마세요.`;
+  const today = new Date().toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: 'long', day: 'numeric' });
+  const input = `${context ? '[직전 대화]\n' + context + '\n\n' : ''}오늘 날짜: ${today}\n[요청]\n${query}\n\n반드시 웹검색 도구로 한국어 검색어를 직접 만들어 검색한 뒤, 가장 최근의 공개 기사·게시글 3~5건을 찾아 각각 제목, 날짜, 핵심 내용을 한국어로 정리하세요. 요청이 막연하면 가장 합리적인 검색어(예: "보험 업계 뉴스", "보험 설계사 제도 변경")로 검색하세요. 검색 결과에 실제로 있는 내용만 쓰되, "확인할 수 없다"고 답하기 전에 검색어를 바꿔 한 번 더 검색하세요.`;
   console.log('[웹검색] 시작:', query.slice(0, 60), '| 후보 모델:', models.join(','));
   for (const model of models) {
     try {
@@ -226,6 +228,7 @@ async function webSearch(query, history, diag) {
         body: JSON.stringify({
           model,
           tools: [{ type: 'web_search', user_location: { type: 'approximate', country: 'KR' } }],
+          tool_choice: 'required',
           input,
         }),
         signal: ctrl.signal,
@@ -257,13 +260,14 @@ async function webSearch(query, history, diag) {
       }
       console.log(`[웹검색] ${model} 응답 수신 — 본문 ${text.length}자, 출처 ${sources.length}개, 항목: ${(data.output || []).map(o => o.type).join(',')}`);
       diag.push({ model, status: 200, textLength: text.length, sources: sources.length, outputTypes: (data.output || []).map(o => o.type) });
-      if (text) return { text: text.slice(0, 6000), sources };
+      if (text && sources.length) return { text: text.slice(0, 6000), sources };
+      if (text && !weak) weak = { text: text.slice(0, 6000), sources };
     } catch (e) {
       console.error(`웹검색 오류(${model}):`, e.message);
       diag.push({ model, exception: e.message });
     }
   }
-  return null;
+  return weak;
 }
 
 // [임시 진단용] 브라우저 주소창에서 웹검색이 되는지 바로 확인합니다. 확인 후 삭제하세요.
