@@ -80,17 +80,46 @@ function normalize(vec) {
   return vec.map(x => x / n);
 }
 
+// OpenAI 임베딩은 분당 사용량 한도가 있어서(조직 기준), 큰 약관을 연속으로 올리면 한도에 걸립니다.
+// 최근 1분 사용량을 추정해 미리 속도를 늦추고, 그래도 한도 오류(429)가 나면 기다렸다가 다시 시도합니다.
+const embedWindow = [];
+async function throttleEmbed(tokens) {
+  const LIMIT = 600000; // 분당 한도(100만)보다 넉넉히 낮게
+  for (;;) {
+    const now = Date.now();
+    while (embedWindow.length && now - embedWindow[0].t > 60000) embedWindow.shift();
+    const used = embedWindow.reduce((n, x) => n + x.tokens, 0);
+    if (used + tokens <= LIMIT || !embedWindow.length) break;
+    await sleep(Math.max(1000, 60000 - (now - embedWindow[0].t) + 300));
+  }
+  embedWindow.push({ t: Date.now(), tokens });
+}
+
 async function embedTexts(texts) {
   const out = [];
   for (let i = 0; i < texts.length; i += 50) {
     const batch = texts.slice(i, i + 50).map(t => String(t).slice(0, 6000));
-    const r = await fetch('https://api.openai.com/v1/embeddings', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: EMBED_MODEL, input: batch, dimensions: EMBED_DIMS }),
-    });
-    if (!r.ok) throw new Error('임베딩 실패: ' + (await r.text()).slice(0, 200));
-    const data = await r.json();
+    await throttleEmbed(Math.ceil(batch.reduce((n, t) => n + t.length, 0) * 0.9));
+    let data = null;
+    for (let attempt = 1; attempt <= 8; attempt++) {
+      const r = await fetch('https://api.openai.com/v1/embeddings', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: EMBED_MODEL, input: batch, dimensions: EMBED_DIMS }),
+      });
+      if (r.ok) { data = await r.json(); break; }
+      const body = await r.text();
+      if ((r.status === 429 || r.status >= 500) && attempt < 8) {
+        // "Please try again in 1m3.5s" / "in 820ms" 형태의 안내를 읽어 그만큼 기다립니다.
+        const m = body.match(/try again in\s+(?:(\d+)m)?\s*([\d.]+)(ms|s)/i);
+        let wait = 5000 * attempt;
+        if (m) wait = ((Number(m[1] || 0) * 60) + (m[3] === 'ms' ? Number(m[2]) / 1000 : Number(m[2]))) * 1000 + 1500;
+        console.log(`[지식] 임베딩 대기 ${Math.round(wait / 1000)}초 (시도 ${attempt}, 상태 ${r.status})`);
+        await sleep(Math.min(wait, 70000));
+        continue;
+      }
+      throw new Error('임베딩 실패: ' + body.slice(0, 200));
+    }
     for (const d of data.data) out.push(normalize(d.embedding));
   }
   return out;
