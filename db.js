@@ -129,6 +129,48 @@ async function initDb() {
     );
   `);
 
+  // 월별 보험사 상품자료 (AI가 이 내용을 읽고 비교·분석해서 답합니다)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS product_docs (
+      id SERIAL PRIMARY KEY,
+      month TEXT NOT NULL,
+      company TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      updated_by INTEGER REFERENCES users(id),
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+
+  // 학습 지식창고: 글/대본은 AI가 정리한 노트만, 표 자료는 페이지별로 보관 (knowledge.js)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS knowledge_docs (
+      id SERIAL PRIMARY KEY,
+      source_type TEXT NOT NULL,
+      source_name TEXT NOT NULL,
+      title TEXT NOT NULL,
+      url TEXT,
+      notice TEXT,
+      mode TEXT NOT NULL DEFAULT 'notes',
+      created_by INTEGER REFERENCES users(id),
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_knowledge_docs_url ON knowledge_docs(url);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_knowledge_docs_source ON knowledge_docs(source_name);`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS knowledge_chunks (
+      id SERIAL PRIMARY KEY,
+      doc_id INTEGER NOT NULL REFERENCES knowledge_docs(id) ON DELETE CASCADE,
+      topic TEXT,
+      note_type TEXT,
+      content TEXT NOT NULL,
+      page INTEGER,
+      embedding JSONB NOT NULL
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_doc ON knowledge_chunks(doc_id);`);
+
   // 처음 배포 시, 데모용 기본 데이터가 하나도 없으면 예시 몇 개를 심어둡니다
   // (관리자 화면에서 바로 수정·삭제할 수 있습니다).
   const termsCount = await pool.query('SELECT COUNT(*) FROM terms');
