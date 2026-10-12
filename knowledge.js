@@ -708,9 +708,10 @@ router.post('/blog/test', async (req, res) => {
 // 페이지 안의 링크(주소·onclick)와 .do/.ajax 같은 요청 주소를 뽑아 사이트 구조를 파악합니다.
 function extractLinks(html, baseUrl) {
   const links = [];
+  const seenKey = new Set();
   const re = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
   let m;
-  while ((m = re.exec(html)) && links.length < 150) {
+  while ((m = re.exec(html)) && links.length < 400) {
     const attrs = m[1];
     const href = (attrs.match(/href\s*=\s*(["'])([\s\S]*?)\1/i) || [])[2] || '';
     const onclick = (attrs.match(/onclick\s*=\s*(["'])([\s\S]*?)\1/i) || [])[2] || '';
@@ -718,9 +719,12 @@ function extractLinks(html, baseUrl) {
     if (!href && !onclick) continue;
     let abs = href;
     if (href && !/^(javascript:|#|mailto:|tel:)/i.test(href)) { try { abs = new URL(href, baseUrl).href; } catch (e) { /* 그대로 */ } }
-    links.push({ text, href: abs, onclick: onclick.slice(0, 80) });
+    const key = `${text}|${abs}|${onclick.slice(0, 120)}`;
+    if (seenKey.has(key)) continue;
+    seenKey.add(key);
+    links.push({ key, text, href: abs, onclick: onclick.slice(0, 120) });
   }
-  const endpoints = [...new Set((html.match(/["'][^"'\s]{2,120}\.(?:do|ajax|jsp|asp|aspx|json)(?:\?[^"'\s]{0,60})?["']/gi) || []).map(x => x.slice(1, -1)))].slice(0, 40);
+  const endpoints = [...new Set((html.match(/["'][^"'\s]{2,120}\.(?:do|ajax|jsp|asp|aspx|json)(?:\?[^"'\s]{0,60})?["']/gi) || []).map(x => x.slice(1, -1)))].slice(0, 60);
   return { links, endpoints };
 }
 
@@ -736,9 +740,25 @@ router.post('/probe', async (req, res) => {
     const t0 = Date.now();
     const r = await fetchText(u, { timeout: 15000 });
     const text = r.text || '';
-    const struct = req.body?.links ? extractLinks(text, u) : null;
+    let struct = null;
+    if (req.body?.links) {
+      struct = extractLinks(text, u);
+      // 사이트 첫 화면의 공통 메뉴 링크는 빼고, 이 화면에만 있는 링크를 보여줍니다.
+      try {
+        const o = new URL(u);
+        if (o.pathname.length > 1 || o.search) {
+          const home = await fetchText(o.origin + '/', { timeout: 15000 });
+          if (home.ok) {
+            const common = new Set(extractLinks(home.text, o.origin + '/').links.map(l => l.key));
+            struct.links = struct.links.filter(l => !common.has(l.key));
+            struct.commonRemoved = true;
+          }
+        }
+      } catch (e) { /* 그대로 */ }
+      struct.fileLike = struct.links.filter(l => /down|file|pdf|attach|fileSeq|약관|요약서|사업방법서/i.test(`${l.href} ${l.onclick} ${l.text}`));
+    }
     out.push({
-      ...(struct ? { links: struct.links, endpoints: struct.endpoints } : {}),
+      ...(struct ? { links: struct.links, endpoints: struct.endpoints, fileLike: struct.fileLike, commonRemoved: !!struct.commonRemoved } : {}),
       url: u, ok: r.ok, status: r.status, error: r.error || null, ms: Date.now() - t0, chars: text.length,
       pdf: text.startsWith('%PDF'),
       pdfLinks: (text.match(/\.pdf/gi) || []).length,
