@@ -705,6 +705,30 @@ router.post('/blog/test', async (req, res) => {
   } catch (e) { console.error('블로그 시험 오류:', e); res.status(500).json({ error: e.message }); }
 });
 
+// 약관 공시실 접속 시험: 서버가 외부 사이트를 열 수 있는지(차단 여부·형식)만 확인합니다. 저장하지 않습니다.
+router.post('/probe', async (req, res) => {
+  const urls = (Array.isArray(req.body?.urls) ? req.body.urls : []).map(u => String(u).trim()).filter(Boolean).slice(0, 10);
+  if (!urls.length) return res.status(400).json({ error: '주소를 한 줄에 하나씩 입력해주세요.' });
+  const out = [];
+  for (const u of urls) {
+    let host = '';
+    try { const x = new URL(u); host = x.hostname; if (!/^https?:$/.test(x.protocol)) throw new Error('x'); } catch (e) { out.push({ url: u, ok: false, note: '주소 형식이 올바르지 않습니다.' }); continue; }
+    if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(host) || !host.includes('.')) { out.push({ url: u, ok: false, note: '내부 주소는 시험할 수 없습니다.' }); continue; }
+    const t0 = Date.now();
+    const r = await fetchText(u, { timeout: 15000 });
+    const text = r.text || '';
+    out.push({
+      url: u, ok: r.ok, status: r.status, error: r.error || null, ms: Date.now() - t0, chars: text.length,
+      pdf: text.startsWith('%PDF'),
+      pdfLinks: (text.match(/\.pdf/gi) || []).length,
+      hints: ['captcha', '보안문자', '자동입력방지', 'Access Denied', 'Forbidden', '로그인'].filter(k => text.toLowerCase().includes(k.toLowerCase())),
+      preview: text.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 150),
+    });
+    await sleep(300);
+  }
+  res.json({ items: out });
+});
+
 router.post('/blog/start', async (req, res) => {
   const blogId = parseBlogId(req.body?.blog);
   if (!blogId) return res.status(400).json({ error: '블로그 주소나 아이디를 확인해주세요.' });
