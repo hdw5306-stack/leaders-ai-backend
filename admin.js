@@ -11,7 +11,9 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { pool } = require('./db');
-const { verifyToken, requireAdmin } = require('./auth');
+const multer = require('multer');
+const { verifyToken, requireAdmin, requireSuperAdmin } = require('./auth');
+const docUpload = multer({ limits: { fileSize: 20 * 1024 * 1024 } });
 
 const router = express.Router();
 router.use(verifyToken, requireAdmin);
@@ -195,6 +197,86 @@ router.put('/claims/:id', async (req, res) => {
 
 router.delete('/claims/:id', async (req, res) => {
   await pool.query('DELETE FROM claims WHERE id = $1', [req.params.id]);
+  res.json({ ok: true });
+});
+
+// ── 월별 보험사 상품자료 관리 (상무 전용) ────────────────────────
+// 보험사별 이달의 주요 상품 자료(PDF/텍스트)를 올려두면, AI 상담에서
+// "이달 경쟁력 있는 상품 알려줘" 같은 질문에 이 자료를 읽고 비교·분석해서 답합니다.
+const MAX_DOC_CHARS = 200000;
+
+// PDF에서 글자만 뽑습니다 (pdfjs-dist, 순수 JS라 별도 설치 부담 없음). 사진/스캔 PDF는 글자가 없어 비어 나옵니다.
+async function extractPdfText(buffer) {
+  const pdfjs = require('pdfjs-dist/legacy/build/pdf.js');
+  const doc = await pdfjs.getDocument({
+    data: new Uint8Array(buffer), useSystemFonts: true, disableFontFace: true, isEvalSupported: false,
+  }).promise;
+  let out = '';
+  for (let i = 1; i <= doc.numPages && out.length < MAX_DOC_CHARS; i++) {
+    const page = await doc.getPage(i);
+    const tc = await page.getTextContent();
+    let line = '';
+    for (const it of tc.items) { line += it.str; line += it.hasEOL ? '\n' : ' '; }
+    out += line + '\n\n';
+  }
+  return out;
+}
+
+router.get('/products', requireSuperAdmin, async (req, res) => {
+  const r = await pool.query(
+    `SELECT id, month, company, title, LENGTH(content) AS chars, created_at
+     FROM product_docs ORDER BY month DESC, company, id DESC`
+  );
+  res.json({ items: r.rows });
+});
+
+// 텍스트를 직접 붙여넣어 등록
+router.post('/products', requireSuperAdmin, async (req, res) => {
+  const { month, company, title, content } = req.body || {};
+  if (!month || !company || !title || !content || !String(content).trim()) {
+    return res.status(400).json({ error: '월, 보험사명, 제목, 내용을 모두 입력해주세요.' });
+  }
+  const r = await pool.query(
+    `INSERT INTO product_docs (month, company, title, content, updated_by)
+     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [month, company, title, String(content).slice(0, MAX_DOC_CHARS), req.userId]
+  );
+  res.json({ ok: true, id: r.rows[0].id });
+});
+
+// PDF/텍스트 파일을 올려 글자만 뽑아 등록 (파일 자체는 저장하지 않음)
+router.post('/products/upload', requireSuperAdmin, docUpload.single('file'), async (req, res) => {
+  const { month, company, title } = req.body || {};
+  if (!req.file) return res.status(400).json({ error: '파일을 선택해주세요.' });
+  if (!month || !company) return res.status(400).json({ error: '월과 보험사명을 입력해주세요.' });
+  const name = req.file.originalname || '';
+  let text = '';
+  try {
+    if (/\.pdf$/i.test(name) || req.file.mimetype === 'application/pdf') {
+      text = await extractPdfText(req.file.buffer);
+    } else if (/\.(txt|md|csv)$/i.test(name) || (req.file.mimetype || '').startsWith('text/')) {
+      text = req.file.buffer.toString('utf-8');
+    } else {
+      return res.status(400).json({ error: 'PDF 또는 텍스트(.txt) 파일만 올릴 수 있습니다. 워드/한글 파일은 PDF로 저장해서 올려주세요.' });
+    }
+  } catch (err) {
+    console.error('상품자료 파일 처리 오류:', err);
+    return res.status(500).json({ error: '파일에서 글자를 읽지 못했습니다.' });
+  }
+  text = text.replace(/\u0000/g, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (text.length < 50) {
+    return res.status(422).json({ error: '글자를 거의 읽지 못했습니다. 사진/스캔 PDF는 지원하지 않습니다. 글자가 선택되는 PDF이거나, 내용을 복사해서 "텍스트로 등록"을 이용해주세요.' });
+  }
+  const r = await pool.query(
+    `INSERT INTO product_docs (month, company, title, content, updated_by)
+     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [month, company, (title || name).slice(0, 200), text.slice(0, MAX_DOC_CHARS), req.userId]
+  );
+  res.json({ ok: true, id: r.rows[0].id, chars: Math.min(text.length, MAX_DOC_CHARS) });
+});
+
+router.delete('/products/:id', requireSuperAdmin, async (req, res) => {
+  await pool.query('DELETE FROM product_docs WHERE id = $1', [req.params.id]);
   res.json({ ok: true });
 });
 
