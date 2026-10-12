@@ -361,7 +361,7 @@ async function visionTranscribe(png, pageNo) {
   return String(data.choices?.[0]?.message?.content || '').trim();
 }
 
-function pagesToEntries(pages, title) {
+function pagesToEntries(pages, title, type = '표자료') {
   const entries = [];
   for (const p of pages) {
     if (p.text.replace(/\s/g, '').length < 40) continue;
@@ -369,7 +369,7 @@ function pagesToEntries(pages, title) {
     const head = p.text.split('\n').find(l => l.trim()) || '';
     parts.forEach((t, i) => entries.push({
       topic: `${title} p.${p.page}${parts.length > 1 ? `-${i + 1}` : ''} — ${head.replace(/[#*]/g, '').trim().slice(0, 80)}`,
-      type: '표자료', content: t, page: p.page,
+      type, content: t, page: p.page,
     }));
   }
   return entries;
@@ -599,7 +599,7 @@ async function fetchYoutubeInfo(videoId) {
 /* ───────────────────────── 관리자 라우터 ───────────────────────── */
 
 const router = express.Router();
-const upload = multer({ limits: { fileSize: 20 * 1024 * 1024 } });
+const upload = multer({ limits: { fileSize: 40 * 1024 * 1024 } });
 
 router.get('/sources', async (req, res) => {
   const r = await pool.query(
@@ -658,9 +658,14 @@ router.post('/text', async (req, res) => {
 router.post('/pdf', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '파일을 선택해주세요.' });
   const sourceName = String(req.body.sourceName || '').trim();
-  const mode = req.body.mode === 'notes' ? 'notes' : 'data'; // 'vision'은 아래에서 따로 처리
+  const isTerms = req.body.docType === 'terms'; // 약관 원문: 글자만 읽어 쪽별로 그대로 보관 (요약·변형 없음)
+  const mode = req.body.mode === 'notes' && !isTerms ? 'notes' : 'data'; // 'vision'은 아래에서 따로 처리
   if (!sourceName) return res.status(400).json({ error: '자료 이름을 입력해주세요.' });
   try {
+    if (req.body.skipExisting === '1' && req.body.title) {
+      const ex = await pool.query('SELECT 1 FROM knowledge_docs WHERE source_name = $1 AND title = $2 LIMIT 1', [sourceName, String(req.body.title).slice(0, 300)]);
+      if (ex.rows.length) return res.json({ ok: true, skipped: true, reason: '이미 올린 파일입니다.' });
+    }
     const pages = await extractPdfPages(req.file.buffer);
     const total = pages.reduce((n, p) => n + p.text.length, 0);
     if (total < 200) return res.status(422).json({ error: '글자를 거의 읽지 못했습니다. 사진/스캔 PDF는 지원하지 않습니다.' });
@@ -669,7 +674,7 @@ router.post('/pdf', upload.single('file'), async (req, res) => {
     if (!notice && /사내\s*교육용/.test(pages.slice(0, 3).map(p => p.text).join(' '))) {
       notice = '사내 교육용 자료입니다. 보험 안내자료로 사용하거나 외부에 공유할 수 없습니다. 고객 안내는 가입설계서·상품설명서·약관 기준으로 하세요.';
     }
-    if (req.body.mode === 'vision') {
+    if (req.body.mode === 'vision' && !isTerms) {
       const id = String(++jobSeq);
       const job = { id, status: 'starting', total: pages.length, done: 0, learned: 0, notes: 0, skipped: 0, failed: 0, log: [], message: '' };
       jobs.set(id, job);
@@ -680,8 +685,8 @@ router.post('/pdf', upload.single('file'), async (req, res) => {
       const r = await learnFromText({ sourceType: 'file', sourceName, title, url: null, text: pages.map(p => p.text).join('\n\n'), notice, userId: req.userId });
       return res.json({ ok: true, mode, ...r });
     }
-    const entries = pagesToEntries(pages, title);
-    const r = await saveDoc({ sourceType: 'file', sourceName, title, url: null, notice, mode: 'data', entries, userId: req.userId });
+    const entries = pagesToEntries(pages, title, isTerms ? '약관원문' : '표자료');
+    const r = await saveDoc({ sourceType: isTerms ? 'terms' : 'file', sourceName, title, url: null, notice, mode: 'data', entries, userId: req.userId });
     res.json({ ok: true, mode, pages: pages.length, saved: r.saved, notice: notice || null });
   } catch (e) { console.error('PDF 학습 오류:', e); res.status(500).json({ error: e.message }); }
 });
