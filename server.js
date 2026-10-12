@@ -1,854 +1,576 @@
 /**
- * knowledge.js — 학습 지식창고
+ * server.js — 리더스 AI 비서 백엔드 서버
  *
- * 하는 일
- *   1) 블로그 글 / 영상 대본 / 붙여넣은 글을 읽고, AI가 "학습 노트"(핵심 원칙·절차·판례·주의점)로
- *      정리합니다. 원문은 저장하지 않고, 정리된 노트와 출처(제목·주소)만 저장합니다.
- *   2) 표·숫자 자료(PDF 가이드북 등)는 정리하면 숫자가 틀어질 수 있어, 페이지별로 구조를 살려
- *      그대로 보관합니다 (사내 교육용 같은 사용 제한 문구도 함께 저장).
- *   3) 노트/페이지마다 OpenAI 임베딩(의미 벡터)을 만들어 두고, 질문이 오면 의미가 가까운
- *      것들을 찾아 AI 상담에 참고자료로 건네줍니다. (search)
+ * 역할 4가지:
+ *   1) 음성인식(STT) 중계 — leaders-ai-assistant.html이 iOS 등 Web Speech API
+ *      미지원 환경에서 녹음한 오디오를 받아 OpenAI Whisper API로 전달
+ *   1-1) 음성 합성(TTS) — 답변을 소리로 읽어줄 때, 브라우저 자체 음성합성이
+ *      지원되지 않는 환경(카카오톡 인앱 브라우저 등)에서도 항상 동일하게
+ *      소리가 나도록 OpenAI TTS로 mp3를 만들어 내려줌
+ *   2) 로그인/회원가입 — 설계사별 별도 계정 (자체 아이디/비밀번호, JWT)
+ *   3) 개인 일정 저장 — 카테고리(미팅/계약/방문/개인/기타)별로 DB에 저장,
+ *      로그인한 사용자 본인 것만 조회/삭제 가능
+ *   4) 첨부 사진/서류 분석 — 채팅 중 올린 사진(고객 서류, 상품 팜플렛 등)을
+ *      OpenAI Vision(gpt-4o-mini)으로 분석해 질문에 답변. 파일은 저장하지 않고
+ *      요청 처리 후 즉시 버립니다.
+ *   5) 관리자 기능(3단계 권한: 설계사/지사장/상무) — 지사장은 자기 지사 소속
+ *      설계사만 승인/관리, 상무는 전체 지사·설계사를 보고 지사·지사장 계정을
+ *      만들 수 있습니다. 약관·보상사례 공용 DB도 여기서 관리하며, 수정하면
+ *      모든 설계사 화면에 즉시 반영됩니다.
+ *   6) 지사 목록 — 회원가입 화면에서 소속 지사를 선택하는 데 사용
  *
- * 관리자(상무)만 등록·삭제할 수 있고, AI 상담(/api/chat)은 search()만 사용합니다.
+ * Railway 같은 Node.js 호스팅에 올려서 쓰도록 만들어졌습니다
+ * (m.leadersfc.co.kr은 정적 파일만 호스팅하는 카페24라 이 서버는
+ * 별도 호스팅(Railway)에 둡니다).
+ *
+ * 로컬 실행
+ *   1) npm install
+ *   2) cp .env.example .env  →  .env 안에 값 채우기
+ *   3) npm start
+ *   4) http://localhost:3000 으로 헬스체크 확인
+ *
+ * Railway 배포는 이 폴더의 README.md를 참고하세요.
  */
 
 const express = require('express');
 const multer = require('multer');
-const { pool } = require('./db');
+const FormData = require('form-data');
+const { initDb, pool } = require('./db');
+const { router: authRoutes, verifyToken, requireSuperAdmin } = require('./auth');
+const knowledge = require('./knowledge');
+const scheduleRoutes = require('./schedule');
+const adminRoutes = require('./admin');
+const contentRoutes = require('./content');
+const branchRoutes = require('./branches');
 
-const EMBED_MODEL = 'text-embedding-3-small';
-const EMBED_DIMS = 512;
-const DISTILL_MODEL = process.env.DISTILL_MODEL || 'gpt-4.1-mini';
-const UA = 'Mozilla/5.0 (compatible; LeadersAIBot/1.0; +https://leadersfp.co.kr)';
+const app = express();
+app.use(express.json({ limit: '5mb' }));
+const upload = multer({ limits: { fileSize: 15 * 1024 * 1024 } }); // 오디오/이미지는 메모리에만 잠깐 보관 후 즉시 폐기, 15MB 제한
 
-/* ───────────────────────── 공통 도구 ───────────────────────── */
+// ── CORS 설정 ──────────────────────────────────────────────
+// leaders-ai-assistant.html은 m.leadersfc.co.kr(카페24)에서 열리고,
+// 이 서버는 Railway의 다른 도메인에서 돌아가므로 "다른 출처(cross-origin)"
+// 요청이 됩니다. ALLOWED_ORIGINS 환경변수에 허용할 도메인을 콤마로
+// 나열하세요. 비워두면 개발 편의상 전체 허용(*)으로 동작합니다.
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 
-async function fetchText(url, opts = {}) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), opts.timeout || 15000);
-  try {
-    const r = await fetch(url, {
-      signal: ctrl.signal,
-      redirect: 'follow',
-      headers: { 'User-Agent': UA, 'Accept-Language': 'ko-KR,ko;q=0.9', ...(opts.headers || {}) },
-    });
-    const text = await r.text();
-    return { ok: r.ok, status: r.status, text };
-  } catch (e) {
-    return { ok: false, status: 0, text: '', error: e.message };
-  } finally {
-    clearTimeout(timer);
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (allowedOrigins.length === 0) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  } else if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
   }
-}
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
-function decodeEntities(s) {
-  return s
+// Railway/모니터링용 헬스체크 — 브라우저로 서버 주소만 열어도 정상 배포 확인 가능
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', service: '리더스 AI 비서 백엔드 서버' });
+});
+
+// ── 1) 음성인식(STT) ──────────────────────────────────────────
+app.post('/api/stt', upload.single('audio'), async (req, res) => {
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: 'OPENAI_API_KEY 환경변수가 설정되지 않았습니다.' });
+  }
+  if (!req.file) {
+    return res.status(400).json({ error: '오디오 파일이 전달되지 않았습니다.' });
+  }
+
+  try {
+    const form = new FormData();
+    form.append('file', req.file.buffer, {
+      filename: 'recording.webm',
+      contentType: req.file.mimetype || 'audio/webm',
+    });
+    form.append('model', 'whisper-1');
+    form.append('language', 'ko'); // 한국어로 고정
+
+    const openaiRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        ...form.getHeaders(),
+      },
+      body: form,
+    });
+
+    if (!openaiRes.ok) {
+      const errText = await openaiRes.text();
+      console.error('Whisper API 오류:', errText);
+      return res.status(502).json({ error: 'STT 서비스 호출에 실패했습니다.' });
+    }
+
+    const data = await openaiRes.json();
+    res.json({ text: data.text || '' });
+  } catch (err) {
+    console.error('STT 처리 중 오류:', err);
+    res.status(500).json({ error: '서버 내부 오류' });
+  }
+});
+
+// ── 1-1) 음성 합성(TTS) ──────────────────────────────────────────
+// 브라우저 자체 음성합성(Web Speech API)은 카카오톡 인앱 브라우저 등 일부
+// 환경에서 아예 지원되지 않아 화면에 답은 뜨는데 소리만 안 나는 경우가
+// 있습니다. 그래서 답변 음성은 서버에서 OpenAI TTS로 mp3 파일을 만들어
+// 내려주는 방식을 기본으로 씁니다 — 어떤 브라우저(카카오톡 포함)에서
+// 열어도 항상 동일하게 소리가 납니다.
+app.post('/api/tts', async (req, res) => {
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: 'OPENAI_API_KEY 환경변수가 설정되지 않았습니다.' });
+  }
+  const { text, voice } = req.body || {};
+  if (!text || !text.trim()) {
+    return res.status(400).json({ error: '읽어줄 텍스트가 없습니다.' });
+  }
+  const allowedVoices = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
+  const useVoice = allowedVoices.includes(voice) ? voice : 'nova';
+
+  try {
+    const openaiRes = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'tts-1',
+        voice: useVoice,
+        input: text.slice(0, 1000), // 답변이 너무 길면 앞부분만 음성으로 읽어줍니다
+        response_format: 'mp3',
+      }),
+    });
+
+    if (!openaiRes.ok) {
+      const errText = await openaiRes.text();
+      console.error('TTS API 오류:', errText);
+      return res.status(502).json({ error: '음성 합성 서비스 호출에 실패했습니다.' });
+    }
+
+    const arrayBuffer = await openaiRes.arrayBuffer();
+    res.set('Content-Type', 'audio/mpeg');
+    res.send(Buffer.from(arrayBuffer));
+  } catch (err) {
+    console.error('TTS 처리 중 오류:', err);
+    res.status(500).json({ error: '서버 내부 오류' });
+  }
+});
+
+// 메시지 안에 포함된 간단한 HTML을 사람이 읽는 글자만 남도록 정리합니다
+// (블로그/홈페이지 글 요약 기능에서 사용)
+function extractTextFromHtml(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'")
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
-}
-
-// 문단 구분(줄바꿈)을 살려서 태그를 제거합니다.
-function htmlToText(html) {
-  return decodeEntities(
-    html
-      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<!--[\s\S]*?-->/g, ' ')
-      .replace(/<\/(p|div|li|h[1-6]|tr|table|blockquote)>/gi, '\n')
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<[^>]+>/g, ' ')
-  )
-    .replace(/[ \t ​]+/g, ' ')
-    .replace(/ *\n */g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-/* ───────────────────────── 임베딩 / 검색 ───────────────────────── */
-
-function normalize(vec) {
-  let n = 0;
-  for (const x of vec) n += x * x;
-  n = Math.sqrt(n) || 1;
-  return vec.map(x => x / n);
-}
-
-// OpenAI 임베딩은 분당 사용량 한도가 있어서(조직 기준), 큰 약관을 연속으로 올리면 한도에 걸립니다.
-// 최근 1분 사용량을 추정해 미리 속도를 늦추고, 그래도 한도 오류(429)가 나면 기다렸다가 다시 시도합니다.
-const embedWindow = [];
-async function throttleEmbed(tokens) {
-  const LIMIT = 600000; // 분당 한도(100만)보다 넉넉히 낮게
-  for (;;) {
-    const now = Date.now();
-    while (embedWindow.length && now - embedWindow[0].t > 60000) embedWindow.shift();
-    const used = embedWindow.reduce((n, x) => n + x.tokens, 0);
-    if (used + tokens <= LIMIT || !embedWindow.length) break;
-    await sleep(Math.max(1000, 60000 - (now - embedWindow[0].t) + 300));
+// 사용자가 채팅에 붙여넣은 URL(블로그/홈페이지 주소)을 서버가 직접 불러와
+// 본문 텍스트만 뽑아냅니다. 로그인/결제 등이 필요한 페이지, 접속을
+// 차단하는 사이트는 실패할 수 있고, 그 경우 AI가 솔직히 안내합니다.
+async function fetchPageText(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const r = await fetch(url, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LeadersAIBot/1.0; +https://leadersfp.co.kr)' },
+    });
+    clearTimeout(timeout);
+    if (!r.ok) return null;
+    const contentType = r.headers.get('content-type') || '';
+    if (!contentType.includes('text/html') && !contentType.includes('text')) return null;
+    const html = await r.text();
+    const text = extractTextFromHtml(html);
+    return text.slice(0, 8000); // 너무 긴 페이지는 앞부분만 사용
+  } catch (err) {
+    clearTimeout(timeout);
+    return null;
   }
-  embedWindow.push({ t: Date.now(), tokens });
 }
 
-async function embedTexts(texts) {
-  const out = [];
-  for (let i = 0; i < texts.length; i += 50) {
-    const batch = texts.slice(i, i + 50).map(t => String(t).slice(0, 6000));
-    await throttleEmbed(Math.ceil(batch.reduce((n, t) => n + t.length, 0) * 0.9));
-    let data = null;
-    for (let attempt = 1; attempt <= 8; attempt++) {
-      const r = await fetch('https://api.openai.com/v1/embeddings', {
+// ── 웹검색 (OpenAI Responses API web_search 도구) ─────────────────
+// 네이버 검색 API 키 없이, 이미 쓰고 있는 OPENAI_API_KEY만으로 동작합니다.
+// 로그인이 필요한 카페/SNS 글은 읽을 수 없고, 공개된 웹페이지만 대상입니다.
+// 모델은 환경변수 SEARCH_MODEL로 바꿀 수 있고, 안 되면 다음 후보로 자동 시도합니다.
+const SEARCH_TRIGGER = /검색|찾아|알아봐|알아봐줘|최신|최근|뉴스|요즘|트렌드|후기|블로그|카페|홈페이지|사이트|유튜브|sns|인스타|페이스북/i;
+async function webSearch(query, history, diag) {
+  diag = diag || [];
+  const models = [process.env.SEARCH_MODEL, 'gpt-4.1-mini', 'gpt-4.1'].filter(Boolean);
+  let weak = null; // 출처 없이 끝난 결과는 보관만 하고 다음 모델로 한 번 더 시도
+  const context = (history || []).slice(-4).map(h => `${h.role === 'user' ? '사용자' : '비서'}: ${h.content}`).join('\n');
+  const today = new Date().toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: 'long', day: 'numeric' });
+  const input = `${context ? '[직전 대화]\n' + context + '\n\n' : ''}오늘 날짜: ${today}\n[요청]\n${query}\n\n반드시 웹검색 도구로 한국어 검색어를 직접 만들어 검색한 뒤, 가장 최근의 공개 기사·게시글 3~5건을 찾아 각각 제목, 날짜, 핵심 내용을 한국어로 정리하세요. 요청이 막연하면 가장 합리적인 검색어(예: "보험 업계 뉴스", "보험 설계사 제도 변경")로 검색하세요. 검색 결과에 실제로 있는 내용만 쓰되, "확인할 수 없다"고 답하기 전에 검색어를 바꿔 한 번 더 검색하세요.`;
+  console.log('[웹검색] 시작:', query.slice(0, 60), '| 후보 모델:', models.join(','));
+  for (const model of models) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 25000);
+      const r = await fetch('https://api.openai.com/v1/responses', {
         method: 'POST',
         headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: EMBED_MODEL, input: batch, dimensions: EMBED_DIMS }),
+        body: JSON.stringify({
+          model,
+          tools: [{ type: 'web_search', user_location: { type: 'approximate', country: 'KR' } }],
+          tool_choice: 'required',
+          input,
+        }),
+        signal: ctrl.signal,
       });
-      if (r.ok) { data = await r.json(); break; }
-      const body = await r.text();
-      if ((r.status === 429 || r.status >= 500) && attempt < 8) {
-        // "Please try again in 1m3.5s" / "in 820ms" 형태의 안내를 읽어 그만큼 기다립니다.
-        const m = body.match(/try again in\s+(?:(\d+)m)?\s*([\d.]+)(ms|s)/i);
-        let wait = 5000 * attempt;
-        if (m) wait = ((Number(m[1] || 0) * 60) + (m[3] === 'ms' ? Number(m[2]) / 1000 : Number(m[2]))) * 1000 + 1500;
-        console.log(`[지식] 임베딩 대기 ${Math.round(wait / 1000)}초 (시도 ${attempt}, 상태 ${r.status})`);
-        await sleep(Math.min(wait, 70000));
+      clearTimeout(timer);
+      if (!r.ok) {
+        const errBody = (await r.text()).slice(0, 500);
+        console.error(`웹검색 실패(${model}):`, errBody);
+        diag.push({ model, status: r.status, error: errBody });
         continue;
       }
-      throw new Error('임베딩 실패: ' + body.slice(0, 200));
-    }
-    for (const d of data.data) out.push(normalize(d.embedding));
-  }
-  return out;
-}
-
-let cache = null; // { items: [{id, docId, topic, content, page, vec, doc...}] }
-function invalidateCache() { cache = null; }
-
-async function loadCache() {
-  if (cache) return cache;
-  const rows = (await pool.query(
-    `SELECT c.id, c.doc_id, c.topic, c.note_type, c.content, c.page, c.embedding,
-            d.title, d.url, d.source_name, d.source_type, d.notice
-     FROM knowledge_chunks c JOIN knowledge_docs d ON d.id = c.doc_id`
-  )).rows;
-  cache = {
-    items: rows.map(r => ({
-      id: r.id, docId: r.doc_id, topic: r.topic, noteType: r.note_type, content: r.content, page: r.page,
-      title: r.title, url: r.url, sourceName: r.source_name, sourceType: r.source_type, notice: r.notice,
-      vec: Float32Array.from(typeof r.embedding === 'string' ? JSON.parse(r.embedding) : r.embedding),
-    })),
-  };
-  return cache;
-}
-
-// 질문과 의미가 가까운 노트/페이지를 찾습니다.
-async function search(query, k = 6, minScore = 0.3) {
-  const { items } = await loadCache();
-  if (!items.length || !query || !query.trim()) return [];
-  const [q] = await embedTexts([query]);
-  const qv = Float32Array.from(q);
-  const scored = items.map(it => {
-    let s = 0;
-    for (let i = 0; i < qv.length; i++) s += qv[i] * it.vec[i];
-    return { it, score: s };
-  }).filter(x => x.score >= minScore).sort((a, b) => b.score - a.score);
-  const perDoc = new Map();
-  const picked = [];
-  for (const x of scored) {
-    const n = perDoc.get(x.it.docId) || 0;
-    if (n >= 3) continue; // 한 자료에서 3개까지만 (다양하게)
-    perDoc.set(x.it.docId, n + 1);
-    const { vec, ...rest } = x.it;
-    picked.push({ ...rest, score: Number(x.score.toFixed(3)) });
-    if (picked.length >= k) break;
-  }
-  return picked;
-}
-
-/* ───────────────────────── 학습(정리) ───────────────────────── */
-
-const DISTILL_SYSTEM = `당신은 보험 실무 지식을 정리하는 학습 담당자입니다. 아래 글(블로그 글 또는 영상 대본)을 읽고, 보험설계사가 고객 상담·보험금 청구·보험 설계에 바로 쓸 수 있는 "학습 노트"로 정리하세요.
-
-규칙:
-- 원문의 문장을 그대로 옮기지 말고, 반드시 당신의 말로 압축해서 다시 쓰세요. 표현이 아니라 사실·원칙·절차·기준·수치를 정리하는 것입니다.
-- 핵심만 담으세요: 원칙/기준, 처리 절차, 보험금 청구·분쟁 시 주의점, 판례(법원, 선고일, 사건번호, 쟁점, 결론), 상품·특약 조합의 요령과 이유, 용어 설명.
-- 홍보 문구, 인사말, 일상 이야기, 방송 일정 안내 같은 것은 제외하세요.
-- 글에 없는 내용을 추가하거나 추측하지 마세요. 판례 번호나 수치는 글에 나온 그대로만 쓰세요.
-- 보험·금융·법률·의학 실무와 무관한 글이면 notes를 빈 배열로 하세요.
-- 노트는 글 하나당 최대 8개, 각 노트의 content는 3~8문장.
-
-반드시 아래 JSON으로만 답하세요:
-{"notes":[{"topic":"한 줄 주제","type":"원칙|절차|판례|상품조합|주의|용어","content":"정리 내용","keywords":["검색에 쓰일 핵심어", "..."]}]}`;
-
-async function distillOnce(title, text) {
-  const r = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: DISTILL_MODEL,
-      response_format: { type: 'json_object' },
-      temperature: 0.2,
-      max_tokens: 2500,
-      messages: [
-        { role: 'system', content: DISTILL_SYSTEM },
-        { role: 'user', content: `[제목] ${title}\n\n[본문]\n${text}` },
-      ],
-    }),
-  });
-  if (!r.ok) throw new Error('정리 실패: ' + (await r.text()).slice(0, 200));
-  const data = await r.json();
-  let parsed = {};
-  try { parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}'); } catch (e) { /* 빈 결과 */ }
-  const notes = Array.isArray(parsed.notes) ? parsed.notes : [];
-  return notes
-    .filter(n => n && typeof n.content === 'string' && n.content.trim().length > 20)
-    .map(n => ({
-      topic: String(n.topic || title).slice(0, 200),
-      type: String(n.type || '').slice(0, 20),
-      content: n.content.trim().slice(0, 2500),
-      keywords: Array.isArray(n.keywords) ? n.keywords.map(String).slice(0, 12) : [],
-    }));
-}
-
-// 긴 글(영상 대본 등)은 12,000자씩 나눠 정리합니다.
-async function distill(title, text) {
-  const WINDOW = 12000;
-  const notes = [];
-  for (let i = 0; i < text.length && i < WINDOW * 6; i += WINDOW) {
-    notes.push(...(await distillOnce(title, text.slice(i, i + WINDOW))));
-  }
-  return notes;
-}
-
-/* ───────────────────────── 저장 ───────────────────────── */
-
-async function docExists(url) {
-  if (!url) return false;
-  return (await pool.query('SELECT 1 FROM knowledge_docs WHERE url = $1 LIMIT 1', [url])).rows.length > 0;
-}
-
-// entries: [{topic, type, content, keywords, page}]
-async function saveDoc({ sourceType, sourceName, title, url, notice, mode, entries, userId }) {
-  if (!entries.length) return { docId: null, saved: 0 };
-  const embedInputs = entries.map(e => `${e.topic || ''}\n${e.content}\n${(e.keywords || []).join(' ')}`);
-  const vecs = await embedTexts(embedInputs);
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const d = await client.query(
-      `INSERT INTO knowledge_docs (source_type, source_name, title, url, notice, mode, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-      [sourceType, sourceName, String(title).slice(0, 300), url || null, notice || null, mode, userId || null]
-    );
-    const docId = d.rows[0].id;
-    for (let i = 0; i < entries.length; i++) {
-      const e = entries[i];
-      await client.query(
-        `INSERT INTO knowledge_chunks (doc_id, topic, note_type, content, page, embedding)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [docId, e.topic || null, e.type || null, e.content, e.page || null, JSON.stringify(vecs[i])]
-      );
-    }
-    await client.query('COMMIT');
-    invalidateCache();
-    return { docId, saved: entries.length };
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
-}
-
-// 글/대본을 읽고 정리해서 저장
-async function learnFromText({ sourceType, sourceName, title, url, text, notice, userId }) {
-  if (await docExists(url)) return { skipped: true, reason: '이미 학습한 글입니다.' };
-  const notes = await distill(title, text);
-  if (!notes.length) return { skipped: true, reason: '보험 실무와 관련된 내용을 찾지 못했습니다.' };
-  const r = await saveDoc({ sourceType, sourceName, title, url, notice, mode: 'notes', entries: notes, userId });
-  return { saved: r.saved, notes };
-}
-
-/* ───────────────────────── PDF (표·숫자 자료) ───────────────────────── */
-
-// 페이지마다 글자 위치(좌표)로 줄과 칸을 복원합니다. 칸 사이는 " | "로 구분합니다.
-async function extractPdfPages(buffer) {
-  const pdfjs = require('pdfjs-dist/legacy/build/pdf.js');
-  const doc = await pdfjs.getDocument({
-    data: new Uint8Array(buffer), useSystemFonts: true, disableFontFace: true, isEvalSupported: false,
-  }).promise;
-  const pages = [];
-  for (let p = 1; p <= doc.numPages; p++) {
-    const page = await doc.getPage(p);
-    const tc = await page.getTextContent();
-    const items = tc.items
-      .filter(it => typeof it.str === 'string' && it.str.length)
-      .map(it => ({ x: it.transform[4], y: it.transform[5], w: it.width || 0, s: it.str }));
-    // 위에서 아래로, y가 비슷한 글자들(±3)을 같은 줄로 묶습니다.
-    items.sort((a, b) => b.y - a.y || a.x - b.x);
-    const rowsArr = [];
-    for (const it of items) {
-      const row = rowsArr.find(r => Math.abs(r.y - it.y) <= 3);
-      if (row) row.items.push(it); else rowsArr.push({ y: it.y, items: [it] });
-    }
-    rowsArr.sort((a, b) => b.y - a.y);
-    const lines = rowsArr.map(r => {
-      r.items.sort((a, b) => a.x - b.x);
-      let line = '';
-      let prevEnd = null;
-      for (const it of r.items) {
-        if (prevEnd !== null) {
-          const gap = it.x - prevEnd;
-          if (gap > 8) line += ' | ';
-          else if (gap > 0.8 && !/\s$/.test(line) && !/^\s/.test(it.s)) line += ' ';
-        }
-        line += it.s;
-        prevEnd = it.x + it.w;
-      }
-      return line.replace(/[ \t]+/g, ' ').replace(/ \| (?:\| )+/g, ' | ').trim();
-    }).filter(l => l && l !== '|');
-    pages.push({ page: p, text: lines.join('\n') });
-  }
-  return pages;
-}
-
-function splitLong(text, max) {
-  if (text.length <= max) return [text];
-  const lines = text.split('\n');
-  const parts = [];
-  let cur = '';
-  for (const ln of lines) {
-    if (cur.length + ln.length + 1 > max && cur) { parts.push(cur); cur = ''; }
-    cur += (cur ? '\n' : '') + ln;
-  }
-  if (cur) parts.push(cur);
-  return parts;
-}
-
-
-/* ── PDF를 이미지로 읽기 (표가 복잡할 때 가장 정확한 방식) ── */
-
-// 쪽을 PNG로 그려서 돌려줍니다. @napi-rs/canvas가 없으면 null을 돌려주고 글자 방식으로 대신합니다.
-async function openPdfForRender(buffer) {
-  let cv;
-  try { cv = require('@napi-rs/canvas'); } catch (e) { return null; }
-  globalThis.DOMMatrix = globalThis.DOMMatrix || cv.DOMMatrix;
-  globalThis.Path2D = globalThis.Path2D || cv.Path2D;
-  globalThis.ImageData = globalThis.ImageData || cv.ImageData;
-  const pdfjs = require('pdfjs-dist/legacy/build/pdf.js');
-  class Factory {
-    create(w, h) { const canvas = cv.createCanvas(w, h); return { canvas, context: canvas.getContext('2d') }; }
-    reset(c, w, h) { c.canvas.width = w; c.canvas.height = h; }
-    destroy(c) { c.canvas.width = 0; c.canvas.height = 0; }
-  }
-  const doc = await pdfjs.getDocument({
-    data: new Uint8Array(buffer), useSystemFonts: true, disableFontFace: true, isEvalSupported: false, canvasFactory: new Factory(),
-  }).promise;
-  return {
-    numPages: doc.numPages,
-    async renderPng(n) {
-      const page = await doc.getPage(n);
-      const vp = page.getViewport({ scale: 2 });
-      const f = new Factory().create(Math.ceil(vp.width), Math.ceil(vp.height));
-      await page.render({ canvasContext: f.context, viewport: vp, canvasFactory: new Factory() }).promise;
-      return f.canvas.encode('png');
-    },
-  };
-}
-
-const VISION_PROMPT = `이 이미지는 보험사 상품 비교 자료의 한 페이지입니다. 페이지의 모든 글과 숫자를 빠짐없이, 정확하게 옮겨 적으세요.
-규칙:
-- 표는 열(보험사/상품) 기준으로 풀어서 "보험사 / 상품명 / 항목명: 값 / 항목명: 값" 형태의 목록으로 쓰세요. 병합된 칸이나 여러 줄로 된 칸은 해당하는 모든 열에 값을 연결하고, 남/여, 연령(30세·40세·50세), 일반심사/간편심사, 보증형/미보증형 같은 구분을 값 앞에 반드시 표시하세요.
-- 숫자는 보이는 그대로(쉼표 포함) 옮기세요. 읽기 어려운 값은 추측하지 말고 (불명확)이라고 쓰세요.
-- 제목, 기준 설명(예: 40세, 1억원, 20년납, 보험료 단위), 각주, 기준일도 모두 포함하세요.
-- 색으로 강조된 값(예: 파란색 보험료)이 보이면 값 뒤에 (강조)를 붙이세요.
-- 요약·평가·해석은 하지 말고 옮겨 적기만 하세요. 마크다운 글자만 출력하세요.`;
-
-async function visionTranscribe(png, pageNo) {
-  const r = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: process.env.VISION_MODEL || 'gpt-4.1-mini',
-      temperature: 0,
-      max_tokens: 4000,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: `${VISION_PROMPT}\n(이 페이지 번호: ${pageNo})` },
-          { type: 'image_url', image_url: { url: 'data:image/png;base64,' + Buffer.from(png).toString('base64'), detail: 'high' } },
-        ],
-      }],
-    }),
-  });
-  if (!r.ok) throw new Error('이미지 읽기 실패: ' + (await r.text()).slice(0, 200));
-  const data = await r.json();
-  return String(data.choices?.[0]?.message?.content || '').trim();
-}
-
-function pagesToEntries(pages, title, type = '표자료') {
-  const entries = [];
-  for (const p of pages) {
-    if (p.text.replace(/\s/g, '').length < 40) continue;
-    const parts = splitLong(p.text, 1800);
-    const head = p.text.split('\n').find(l => l.trim()) || '';
-    parts.forEach((t, i) => entries.push({
-      topic: `${title} p.${p.page}${parts.length > 1 ? `-${i + 1}` : ''} — ${head.replace(/[#*]/g, '').trim().slice(0, 80)}`,
-      type, content: t, page: p.page,
-    }));
-  }
-  return entries;
-}
-
-async function runPdfVisionJob(job, { buffer, sourceName, title, notice, userId }) {
-  try {
-    job.status = 'learning';
-    const textPages = await extractPdfPages(buffer);
-    const renderer = await openPdfForRender(buffer);
-    job.total = textPages.length;
-    if (!renderer) job.log.push('이미지 변환 도구를 쓸 수 없어 글자 방식으로 대신 읽습니다.');
-    const pages = [];
-    for (const tp of textPages) {
-      if (job.cancel) break;
-      if (tp.text.replace(/\s/g, '').length < 40) { job.skipped++; job.done++; continue; } // 표지·마지막 쪽
-      let text = tp.text;
-      if (renderer) {
-        try {
-          const png = await renderer.renderPng(tp.page);
-          const t = await visionTranscribe(png, tp.page);
-          if (t.length > 60) text = t; else job.log.push(`p.${tp.page}: 이미지 결과가 짧아 글자 방식으로 대신했습니다.`);
-        } catch (e) {
-          job.failed++; job.log.push(`p.${tp.page}: ${e.message} (글자 방식으로 대신)`);
-        }
-      }
-      pages.push({ page: tp.page, text });
-      job.done++;
-    }
-    if (job.cancel) { job.status = 'cancelled'; return; }
-    const entries = pagesToEntries(pages, title);
-    if (!entries.length) { job.status = 'error'; job.message = '저장할 내용이 없습니다.'; return; }
-    const r = await saveDoc({ sourceType: 'file', sourceName, title, url: null, notice, mode: 'data', entries, userId });
-    job.learned = 1; job.notes = r.saved; job.status = 'done';
-  } catch (e) {
-    console.error('PDF 이미지 학습 오류:', e);
-    job.status = 'error'; job.message = e.message;
-  } finally {
-    job.log = job.log.slice(0, 4).concat(job.log.slice(4).slice(-30));
-  }
-}
-
-/* ───────────────────────── 네이버 블로그 ───────────────────────── */
-
-function parseBlogId(input) {
-  const s = String(input || '').trim();
-  const m = s.match(/blog\.naver\.com\/(?:PostList\.naver\?blogId=)?([A-Za-z0-9_\-]+)/i) || s.match(/^([A-Za-z0-9_\-]+)$/);
-  return m ? m[1] : null;
-}
-
-
-// 응답이 JSON이든 깨진 JSON이든 상관없이 "logNo"가 들어 있는 객체마다 번호와 제목을 뽑습니다.
-function parseLogNos(text) {
-  const out = [];
-  const re = /"logNo"\s*:\s*"?(\d{6,})"?/g;
-  let m;
-  while ((m = re.exec(text))) {
-    const start = text.lastIndexOf('{', m.index);
-    let end = text.indexOf('}', m.index);
-    if (end < 0) end = Math.min(text.length, m.index + 2000);
-    const seg = text.slice(Math.max(0, start), end + 1);
-    const t = (seg.match(/"(?:titleWithInspectMessage|title)"\s*:\s*"((?:[^"\\]|\\.)*)"/) || [])[1] || '';
-    out.push({ no: m[1], title: t });
-  }
-  return out;
-}
-const snip = (t) => String(t || '').replace(/\s+/g, ' ').slice(0, 160);
-
-// 글 목록 읽기: 여러 방식을 차례로 시도하고, 각 방식의 결과를 diag에 남깁니다.
-// (네이버가 한 방식을 막거나 형식을 바꿔도 다른 방식으로 이어가도록)
-async function listBlogPosts(blogId, maxPosts, diag = []) {
-  const posts = [];
-  const seen = new Set();
-  const add = (no, title) => {
-    if (!no || seen.has(no) || posts.length >= maxPosts) return false;
-    seen.add(no);
-    posts.push({ logNo: String(no), title: decodeEntities(String(title || '').trim()) });
-    return true;
-  };
-  const dec = (t) => { try { return decodeURIComponent(String(t).replace(/\+/g, ' ')); } catch (e) { return String(t); } };
-
-  // 방식 1: PostTitleListAsync (PC 글 목록)
-  {
-    let n = 0, status = '';
-    for (let page = 1; posts.length < maxPosts && page <= 80; page++) {
-      const r = await fetchText(`https://blog.naver.com/PostTitleListAsync.naver?blogId=${blogId}&viewdate=&currentPage=${page}&categoryNo=0&parentCategoryNo=&countPerPage=30`,
-        { headers: { Referer: `https://blog.naver.com/${blogId}` } });
-      status = r.ok ? 'OK' : `HTTP ${r.status} ${r.error || ''}`;
-      if (!r.ok) break;
-      let added = 0;
-      for (const it of parseLogNos(r.text)) {
-        if (add(it.no, dec(it.title.replace(/\\"/g, '"')))) { added++; n++; }
-      }
-      if (page === 1 && !added) status = '형식 불명: ' + snip(r.text);
-      if (!added) break;
-      await sleep(400);
-    }
-    diag.push(`목록 방식1(PC): ${status}, ${n}건`);
-  }
-
-  // 방식 2: 모바일 블로그 API
-  if (posts.length < maxPosts) {
-    let n = 0, status = '';
-    for (let page = 1; posts.length < maxPosts && page <= 80; page++) {
-      const r = await fetchText(`https://m.blog.naver.com/api/blogs/${blogId}/post-list?categoryNo=0&itemCount=30&page=${page}`,
-        { headers: { Referer: `https://m.blog.naver.com/${blogId}`, Accept: 'application/json' } });
-      status = r.ok ? 'OK' : `HTTP ${r.status} ${r.error || ''}`;
-      if (!r.ok) break;
-      let added = 0;
-      for (const it of parseLogNos(r.text)) {
-        if (add(it.no, dec(it.title.replace(/\\"/g, '"')))) { added++; n++; }
-      }
-      if (page === 1 && !added) status = '형식 불명: ' + snip(r.text);
-      if (!added) break;
-      await sleep(400);
-    }
-    diag.push(`목록 방식2(모바일): ${status}, ${n}건`);
-  }
-
-  // 방식 3: RSS (최근 글 50건 안팎)
-  if (posts.length < maxPosts) {
-    let n = 0;
-    const r = await fetchText(`https://rss.blog.naver.com/${blogId}.xml`);
-    if (r.ok) {
-      for (const it of r.text.split('<item>').slice(1)) {
-        const link = (it.match(/<link>\s*(?:<!\[CDATA\[)?\s*([^<\]\s]+)/) || [])[1] || '';
-        const no = (link.match(/\/(\d{6,})/) || [])[1];
-        const title = (it.match(/<title>\s*(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?\s*<\/title>/) || [])[1] || '';
-        if (add(no, title)) n++;
-      }
-    }
-    diag.push(`목록 방식3(RSS): ${r.ok ? 'OK' : 'HTTP ' + r.status}, ${n}건`);
-  }
-  return posts;
-}
-
-function extractNaverPost(html) {
-  let body = html;
-  const i = html.indexOf('se-main-container');
-  if (i >= 0) {
-    body = html.slice(i);
-    body = body.slice(body.indexOf('>') + 1); // 'se-main-container"' 태그의 나머지 부분 제거
-    const j = body.search(/id="printPost1"|class="wrap_rabbit|class="comment_area|class="post_footer|se-viewer-footer|class="area_sympathy/);
-    if (j > 0) body = body.slice(0, Math.max(0, body.lastIndexOf('<', j)));
-  } else {
-    const k = html.indexOf('id="postViewArea"');
-    if (k >= 0) body = html.slice(k);
-  }
-  return htmlToText(body);
-}
-
-async function fetchBlogPost(blogId, logNo) {
-  const url = `https://blog.naver.com/PostView.naver?blogId=${blogId}&logNo=${logNo}&redirect=Dlog&widgetTypeCall=true&noTrackingCode=true&directAccess=false`;
-  const r = await fetchText(url);
-  if (!r.ok) return { ok: false, error: `HTTP ${r.status} ${r.error || ''}` };
-  const text = extractNaverPost(r.text);
-  return { ok: text.length >= 120, text, error: text.length < 120 ? '본문을 읽지 못했습니다(내용이 너무 짧음).' : null };
-}
-
-const jobs = new Map();
-let jobSeq = 0;
-
-async function runBlogJob(job, { blogId, maxPosts, sourceName, userId }) {
-  try {
-    job.status = 'listing';
-    const diag = [];
-    const posts = await listBlogPosts(blogId, maxPosts, diag);
-    job.log.push(...diag);
-    job.total = posts.length;
-    if (!posts.length) { job.status = 'error'; job.message = '글 목록을 가져오지 못했습니다. 블로그 주소/아이디를 확인하세요.'; return; }
-    job.status = 'learning';
-    for (const p of posts) {
-      if (job.cancel) break;
-      const url = `https://blog.naver.com/${blogId}/${p.logNo}`;
-      try {
-        if (await docExists(url)) { job.skipped++; job.done++; continue; }
-        const post = await fetchBlogPost(blogId, p.logNo);
-        if (!post.ok) { job.failed++; job.log.push(`읽기 실패: ${p.title} (${post.error})`); job.done++; await sleep(500); continue; }
-        const res = await learnFromText({ sourceType: 'blog', sourceName, title: p.title || `글 ${p.logNo}`, url, text: post.text, userId });
-        if (res.skipped) { job.skipped++; if (res.reason && !/이미/.test(res.reason)) job.log.push(`제외: ${p.title} (${res.reason})`); }
-        else { job.learned++; job.notes += res.saved; }
-      } catch (e) {
-        job.failed++; job.log.push(`오류: ${p.title} (${e.message})`);
-      }
-      job.done++;
-      await sleep(700);
-    }
-    job.status = job.cancel ? 'cancelled' : 'done';
-  } catch (e) {
-    job.status = 'error'; job.message = e.message;
-  } finally {
-    job.log = job.log.slice(0, 4).concat(job.log.slice(4).slice(-30));
-  }
-}
-
-/* ───────────────────────── 유튜브 (가능한 경우만 자동) ───────────────────────── */
-
-function parseYoutubeId(input) {
-  const m = String(input || '').match(/(?:v=|youtu\.be\/|shorts\/|embed\/)([A-Za-z0-9_\-]{11})/);
-  return m ? m[1] : null;
-}
-
-async function fetchYoutubeInfo(videoId) {
-  const r = await fetchText(`https://www.youtube.com/watch?v=${videoId}&hl=ko`, { timeout: 20000 });
-  if (!r.ok) return { ok: false, error: `HTTP ${r.status}` };
-  const m = r.text.match(/ytInitialPlayerResponse\s*=\s*(\{[\s\S]*?\});\s*(?:var|<\/script>)/);
-  if (!m) return { ok: false, error: '영상 정보를 읽지 못했습니다.' };
-  let pr;
-  try { pr = JSON.parse(m[1]); } catch (e) { return { ok: false, error: '영상 정보 해석 실패' }; }
-  const title = pr.videoDetails?.title || '';
-  const description = pr.videoDetails?.shortDescription || '';
-  const tracks = pr.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
-  const track = tracks.find(t => t.languageCode === 'ko') || tracks[0];
-  let transcript = '';
-  if (track?.baseUrl) {
-    const t = await fetchText(track.baseUrl + '&fmt=json3', { timeout: 20000 });
-    if (t.ok && t.text) {
-      try {
-        const j = JSON.parse(t.text);
-        transcript = (j.events || []).map(ev => (ev.segs || []).map(s => s.utf8).join('')).join(' ').replace(/\s+/g, ' ').trim();
-      } catch (e) { /* 자막 없음 */ }
-    }
-  }
-  return { ok: true, title, description, transcript };
-}
-
-/* ───────────────────────── 관리자 라우터 ───────────────────────── */
-
-const router = express.Router();
-const upload = multer({ limits: { fileSize: 40 * 1024 * 1024 } });
-
-router.get('/sources', async (req, res) => {
-  const r = await pool.query(
-    `SELECT d.source_name, d.source_type, d.mode, COUNT(DISTINCT d.id)::int AS docs,
-            COUNT(c.id)::int AS entries, MAX(d.created_at) AS latest
-     FROM knowledge_docs d LEFT JOIN knowledge_chunks c ON c.doc_id = d.id
-     GROUP BY d.source_name, d.source_type, d.mode ORDER BY MAX(d.created_at) DESC`
-  );
-  res.json({ items: r.rows });
-});
-
-router.delete('/source', async (req, res) => {
-  const name = String(req.query.name || '');
-  if (!name) return res.status(400).json({ error: '자료 이름이 필요합니다.' });
-  await pool.query('DELETE FROM knowledge_docs WHERE source_name = $1', [name]);
-  invalidateCache();
-  res.json({ ok: true });
-});
-
-// 학습된 노트 훑어보기 (확인용)
-router.get('/notes', async (req, res) => {
-  const name = String(req.query.name || '');
-  const r = await pool.query(
-    `SELECT c.topic, c.note_type, c.content, c.page, d.title, d.url
-     FROM knowledge_chunks c JOIN knowledge_docs d ON d.id = c.doc_id
-     WHERE d.source_name = $1 ORDER BY d.id DESC, c.id LIMIT 40`, [name]
-  );
-  res.json({ items: r.rows });
-});
-
-// 검색 시험 (질문을 넣으면 어떤 노트가 찾아지는지 확인)
-router.get('/search', async (req, res) => {
-  try {
-    const hits = await search(String(req.query.q || ''), 6, 0.2);
-    res.json({ items: hits.map(h => ({ score: h.score, source: h.sourceName, title: h.title, topic: h.topic, preview: h.content.slice(0, 200) })) });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// 글/대본 붙여넣기 → 읽고 정리해서 학습
-router.post('/text', async (req, res) => {
-  const { sourceName, title, url, content } = req.body || {};
-  if (!sourceName || !title || !content || String(content).trim().length < 100) {
-    return res.status(400).json({ error: '자료 이름, 제목, 내용(100자 이상)을 입력해주세요.' });
-  }
-  try {
-    const r = await learnFromText({
-      sourceType: /youtu/i.test(url || '') ? 'youtube' : 'text',
-      sourceName: String(sourceName).trim(), title: String(title).trim(), url: url ? String(url).trim() : null,
-      text: String(content), userId: req.userId,
-    });
-    res.json({ ok: true, ...r });
-  } catch (e) { console.error('학습 오류:', e); res.status(500).json({ error: e.message }); }
-});
-
-// PDF → (표·숫자 자료) 페이지별로 그대로 보관, 또는 (글 위주) 읽고 정리
-router.post('/pdf', upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: '파일을 선택해주세요.' });
-  const sourceName = String(req.body.sourceName || '').trim();
-  const isTerms = req.body.docType === 'terms'; // 약관 원문: 글자만 읽어 쪽별로 그대로 보관 (요약·변형 없음)
-  const mode = req.body.mode === 'notes' && !isTerms ? 'notes' : 'data'; // 'vision'은 아래에서 따로 처리
-  if (!sourceName) return res.status(400).json({ error: '자료 이름을 입력해주세요.' });
-  try {
-    if (req.body.skipExisting === '1' && req.body.title) {
-      const ex = await pool.query('SELECT 1 FROM knowledge_docs WHERE source_name = $1 AND title = $2 LIMIT 1', [sourceName, String(req.body.title).slice(0, 300)]);
-      if (ex.rows.length) return res.json({ ok: true, skipped: true, reason: '이미 올린 파일입니다.' });
-    }
-    const pages = await extractPdfPages(req.file.buffer);
-    const total = pages.reduce((n, p) => n + p.text.length, 0);
-    if (total < 200) return res.status(422).json({ error: '글자를 거의 읽지 못했습니다. 사진/스캔 PDF는 지원하지 않습니다.' });
-    const title = String(req.body.title || req.file.originalname || sourceName).slice(0, 200);
-    let notice = String(req.body.notice || '').trim();
-    if (!notice && /사내\s*교육용/.test(pages.slice(0, 3).map(p => p.text).join(' '))) {
-      notice = '사내 교육용 자료입니다. 보험 안내자료로 사용하거나 외부에 공유할 수 없습니다. 고객 안내는 가입설계서·상품설명서·약관 기준으로 하세요.';
-    }
-    if (req.body.mode === 'vision' && !isTerms) {
-      const id = String(++jobSeq);
-      const job = { id, status: 'starting', total: pages.length, done: 0, learned: 0, notes: 0, skipped: 0, failed: 0, log: [], message: '' };
-      jobs.set(id, job);
-      runPdfVisionJob(job, { buffer: req.file.buffer, sourceName, title, notice, userId: req.userId });
-      return res.json({ ok: true, jobId: id, mode: 'vision', pages: pages.length, notice: notice || null });
-    }
-    if (mode === 'notes') {
-      const r = await learnFromText({ sourceType: 'file', sourceName, title, url: null, text: pages.map(p => p.text).join('\n\n'), notice, userId: req.userId });
-      return res.json({ ok: true, mode, ...r });
-    }
-    const entries = pagesToEntries(pages, title, isTerms ? '약관원문' : '표자료');
-    const r = await saveDoc({ sourceType: isTerms ? 'terms' : 'file', sourceName, title, url: null, notice, mode: 'data', entries, userId: req.userId });
-    res.json({ ok: true, mode, pages: pages.length, saved: r.saved, notice: notice || null });
-  } catch (e) { console.error('PDF 학습 오류:', e); res.status(500).json({ error: e.message }); }
-});
-
-// 블로그: 시험(1건 읽고 정리 결과만 보여줌, 저장 안 함)
-router.post('/blog/test', async (req, res) => {
-  const blogId = parseBlogId(req.body?.blog);
-  if (!blogId) return res.status(400).json({ error: '블로그 주소나 아이디를 확인해주세요.' });
-  try {
-    const diag = [];
-    const posts = await listBlogPosts(blogId, 5, diag);
-    if (!posts.length) return res.json({ ok: false, message: '글 목록을 가져오지 못했습니다. (서버에서 네이버 접속이 막혔거나 주소가 틀렸을 수 있습니다) ' + diag.join(' / ') });
-    let first = null;
-    for (const p of posts) {
-      const post = await fetchBlogPost(blogId, p.logNo);
-      if (post.ok) { first = { title: p.title, chars: post.text.length, preview: post.text.slice(0, 300), post }; break; }
-    }
-    if (!first) return res.json({ ok: false, listed: posts.length, titles: posts.map(p => p.title), message: '글 목록은 읽었지만 본문을 읽지 못했습니다.' });
-    const notes = await distill(first.title, first.post.text);
-    res.json({ ok: true, listed: posts.length, titles: posts.map(p => p.title), sample: { title: first.title, chars: first.chars, preview: first.preview }, notes });
-  } catch (e) { console.error('블로그 시험 오류:', e); res.status(500).json({ error: e.message }); }
-});
-
-// 페이지 안의 링크(주소·onclick)와 .do/.ajax 같은 요청 주소를 뽑아 사이트 구조를 파악합니다.
-function extractLinks(html, baseUrl) {
-  const links = [];
-  const seenKey = new Set();
-  const re = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
-  let m;
-  while ((m = re.exec(html)) && links.length < 400) {
-    const attrs = m[1];
-    const href = (attrs.match(/href\s*=\s*(["'])([\s\S]*?)\1/i) || [])[2] || '';
-    const onclick = (attrs.match(/onclick\s*=\s*(["'])([\s\S]*?)\1/i) || [])[2] || '';
-    const text = m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
-    if (!href && !onclick) continue;
-    let abs = href;
-    if (href && !/^(javascript:|#|mailto:|tel:)/i.test(href)) { try { abs = new URL(href, baseUrl).href; } catch (e) { /* 그대로 */ } }
-    const key = `${text}|${abs}|${onclick.slice(0, 120)}`;
-    if (seenKey.has(key)) continue;
-    seenKey.add(key);
-    links.push({ key, text, href: abs, onclick: onclick.slice(0, 120) });
-  }
-  const endpoints = [...new Set((html.match(/["'][^"'\s]{2,120}\.(?:do|ajax|jsp|asp|aspx|json)(?:\?[^"'\s]{0,60})?["']/gi) || []).map(x => x.slice(1, -1)))].slice(0, 60);
-  return { links, endpoints };
-}
-
-// 약관 공시실 접속 시험: 서버가 외부 사이트를 열 수 있는지(차단 여부·형식)만 확인합니다. 저장하지 않습니다.
-router.post('/probe', async (req, res) => {
-  const urls = (Array.isArray(req.body?.urls) ? req.body.urls : []).map(u => String(u).trim()).filter(Boolean).slice(0, 10);
-  if (!urls.length) return res.status(400).json({ error: '주소를 한 줄에 하나씩 입력해주세요.' });
-  const out = [];
-  for (const u of urls) {
-    let host = '';
-    try { const x = new URL(u); host = x.hostname; if (!/^https?:$/.test(x.protocol)) throw new Error('x'); } catch (e) { out.push({ url: u, ok: false, note: '주소 형식이 올바르지 않습니다.' }); continue; }
-    if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(host) || !host.includes('.')) { out.push({ url: u, ok: false, note: '내부 주소는 시험할 수 없습니다.' }); continue; }
-    const t0 = Date.now();
-    const r = await fetchText(u, { timeout: 15000 });
-    const text = r.text || '';
-    let struct = null;
-    if (req.body?.links) {
-      struct = extractLinks(text, u);
-      // 사이트 첫 화면의 공통 메뉴 링크는 빼고, 이 화면에만 있는 링크를 보여줍니다.
-      try {
-        const o = new URL(u);
-        if (o.pathname.length > 1 || o.search) {
-          const home = await fetchText(o.origin + '/', { timeout: 15000 });
-          if (home.ok) {
-            const common = new Set(extractLinks(home.text, o.origin + '/').links.map(l => l.key));
-            struct.links = struct.links.filter(l => !common.has(l.key));
-            struct.commonRemoved = true;
+      const data = await r.json();
+      let text = '';
+      const sources = [];
+      const seen = new Set();
+      for (const item of data.output || []) {
+        if (item.type !== 'message') continue;
+        for (const c of item.content || []) {
+          if (c.type === 'output_text') {
+            text += c.text || '';
+            for (const a of c.annotations || []) {
+              if (a.type === 'url_citation' && a.url && !seen.has(a.url)) {
+                seen.add(a.url);
+                sources.push({ title: a.title, url: a.url.replace(/[?&]utm_source=openai$/, '') });
+              }
+            }
           }
         }
-      } catch (e) { /* 그대로 */ }
-      struct.fileLike = struct.links.filter(l => /down|file|pdf|attach|fileSeq|약관|요약서|사업방법서/i.test(`${l.href} ${l.onclick} ${l.text}`));
+      }
+      console.log(`[웹검색] ${model} 응답 수신 — 본문 ${text.length}자, 출처 ${sources.length}개, 항목: ${(data.output || []).map(o => o.type).join(',')}`);
+      diag.push({ model, status: 200, textLength: text.length, sources: sources.length, outputTypes: (data.output || []).map(o => o.type) });
+      if (text && sources.length) return { text: text.slice(0, 6000), sources };
+      if (text && !weak) weak = { text: text.slice(0, 6000), sources };
+    } catch (e) {
+      console.error(`웹검색 오류(${model}):`, e.message);
+      diag.push({ model, exception: e.message });
     }
-    out.push({
-      ...(struct ? { links: struct.links, endpoints: struct.endpoints, fileLike: struct.fileLike, commonRemoved: !!struct.commonRemoved } : {}),
-      url: u, ok: r.ok, status: r.status, error: r.error || null, ms: Date.now() - t0, chars: text.length,
-      pdf: text.startsWith('%PDF'),
-      pdfLinks: (text.match(/\.pdf/gi) || []).length,
-      hints: ['captcha', '보안문자', '자동입력방지', 'Access Denied', 'Forbidden', '로그인'].filter(k => text.toLowerCase().includes(k.toLowerCase())),
-      preview: text.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 150),
-    });
-    await sleep(300);
   }
-  res.json({ items: out });
-});
+  return weak;
+}
 
-router.post('/blog/start', async (req, res) => {
-  const blogId = parseBlogId(req.body?.blog);
-  if (!blogId) return res.status(400).json({ error: '블로그 주소나 아이디를 확인해주세요.' });
-  const maxPosts = Math.max(1, Math.min(Number(req.body?.maxPosts) || 100, 2000));
-  const sourceName = String(req.body?.sourceName || `네이버 블로그 ${blogId}`).trim();
-  const id = String(++jobSeq);
-  const job = { id, status: 'starting', total: 0, done: 0, learned: 0, notes: 0, skipped: 0, failed: 0, log: [], message: '' };
-  jobs.set(id, job);
-  runBlogJob(job, { blogId, maxPosts, sourceName, userId: req.userId });
-  res.json({ ok: true, jobId: id });
-});
-
-router.get('/jobs/:id', (req, res) => {
-  const job = jobs.get(req.params.id);
-  if (!job) return res.status(404).json({ error: '작업을 찾을 수 없습니다(서버가 다시 시작되었을 수 있습니다).' });
-  res.json(job);
-});
-
-router.post('/jobs/:id/cancel', (req, res) => {
-  const job = jobs.get(req.params.id);
-  if (job) job.cancel = true;
-  res.json({ ok: true });
-});
-
-// 유튜브: 주소만 주면 자막을 자동으로 시도, 안 되면 대본 붙여넣기를 안내
-router.post('/youtube', async (req, res) => {
-  const { url, sourceName, transcript } = req.body || {};
-  const id = parseYoutubeId(url);
-  if (!id) return res.status(400).json({ error: '유튜브 영상 주소를 확인해주세요.' });
-  const name = String(sourceName || '유튜브').trim();
+// ── 월별 상품자료 불러오기 ─────────────────────────────────────
+// 상품·경쟁력·비교 같은 질문이면, 관리자가 올려둔 자료를 AI에게 읽혀서 분석하게 합니다.
+const PRODUCT_TRIGGER = /상품|경쟁력|비교|추천|보험사|생명|손해|특약|보험료|가입|보장|신상품|판매|시책|인기|유리|장단점/;
+const PRODUCT_CHAR_BUDGET = 70000;
+async function loadProductDocs(message) {
   try {
-    const canonical = `https://www.youtube.com/watch?v=${id}`;
-    if (await docExists(canonical)) return res.json({ ok: true, skipped: true, reason: '이미 학습한 영상입니다.' });
-    let title = String(req.body.title || '').trim();
-    let text = String(transcript || '').trim();
-    if (!text) {
-      const info = await fetchYoutubeInfo(id);
-      if (!info.ok) return res.json({ ok: false, needTranscript: true, message: `영상 정보를 읽지 못했습니다(${info.error}). 영상의 "스크립트"를 복사해 붙여넣어 주세요.` });
-      title = title || info.title;
-      text = info.transcript;
-      if (!text) return res.json({ ok: false, needTranscript: true, title, message: '자막을 자동으로 가져오지 못했습니다. 영상 아래 "더보기 → 스크립트 표시"에서 글을 복사해 붙여넣어 주세요.' });
+    const months = (await pool.query('SELECT DISTINCT month FROM product_docs ORDER BY month DESC')).rows.map(r => r.month);
+    if (!months.length) return [];
+    let target = months[0];
+    const mm = message.match(/(\d{1,2})\s*월/);
+    if (mm) {
+      const want = String(mm[1]).padStart(2, '0');
+      const found = months.find(m => m.endsWith('-' + want));
+      if (found) target = found;
     }
-    const r = await learnFromText({ sourceType: 'youtube', sourceName: name, title: title || '유튜브 영상', url: canonical, text, userId: req.userId });
-    res.json({ ok: true, title, ...r });
-  } catch (e) { console.error('유튜브 학습 오류:', e); res.status(500).json({ error: e.message }); }
+    const rows = (await pool.query(
+      'SELECT company, title, content, month FROM product_docs WHERE month = $1 ORDER BY company, id', [target]
+    )).rows;
+    const total = rows.reduce((n, r) => n + r.content.length, 0);
+    const ratio = total > PRODUCT_CHAR_BUDGET ? PRODUCT_CHAR_BUDGET / total : 1;
+    return rows.map(r => ({
+      ...r,
+      content: r.content.slice(0, Math.max(3000, Math.floor(r.content.length * ratio))),
+      truncated: ratio < 1,
+    }));
+  } catch (e) {
+    console.error('상품자료 조회 오류:', e.message);
+    return [];
+  }
+}
+
+// ── 1-2) AI 상담(대화형) ────────────────────────────────────────
+// 기존에는 질문 속 특정 단어("암" 등)만 보고 미리 정해둔 답 중 하나를
+// 고르는 방식이라 "암 수술 영상 보여줘" 같은 질문에 "암 진단비 청구
+// 사례"처럼 엉뚱한 답이 나가는 문제가 있었습니다. 이제는 질문 전체를
+// OpenAI에 보내 실제 의도를 이해하고 자연스럽게 답하게 합니다.
+// 약관/보상사례/미디어 DB는 참고자료로만 함께 보내고, 답을 그 안에서
+// 찾을지, 일반 지식으로 답할지는 AI가 스스로 판단합니다.
+// 메시지에 URL(블로그/홈페이지 주소)이 포함되어 있으면, 그 페이지 내용을
+// 직접 불러와 참고자료로 함께 제공해서 요약·질의응답이 가능하게 합니다.
+app.post('/api/chat', async (req, res) => {
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: 'OPENAI_API_KEY 환경변수가 설정되지 않았습니다.' });
+  }
+  const { message, termsDb, claimsDb, mediaDb, history } = req.body || {};
+  if (!message || !message.trim()) {
+    return res.status(400).json({ error: '질문 내용이 없습니다.' });
+  }
+  // 최근 대화 몇 턴을 함께 보내서, 끝말잇기처럼 앞뒤 대화가 이어져야 하는
+  // 경우에도 문맥을 기억하게 합니다. (너무 길어지지 않게 최근 12개만 사용)
+  const safeHistory = Array.isArray(history)
+    ? history
+        .filter(h => h && (h.role === 'user' || h.role === 'assistant') && typeof h.content === 'string')
+        .slice(-12)
+    : [];
+
+  // 메시지에 URL이 있으면 그 페이지 내용을 직접 불러와 참고자료로 추가합니다.
+  let pageContext = '';
+  const urlMatch = message.match(/https?:\/\/[^\s)\]]+/i);
+  if (urlMatch) {
+    const targetUrl = urlMatch[0];
+    const pageText = await fetchPageText(targetUrl);
+    pageContext = pageText
+      ? `\n\n[사용자가 알려준 웹페이지 내용 — 출처: ${targetUrl}]\n${pageText}`
+      : `\n\n[참고: 사용자가 알려준 주소(${targetUrl})를 불러오지 못했습니다 — 로그인이 필요하거나 접속을 차단하는 사이트일 수 있습니다. 이 사실을 사용자에게 솔직히 안내하세요.]`;
+  }
+
+  // URL이 없고 "검색/찾아줘/최신/뉴스" 같은 표현이 있으면 웹검색을 먼저 합니다.
+  let searchSources = [];
+  console.log('[채팅] 질문:', message.slice(0, 60), '| URL있음:', !!urlMatch, '| 검색조건:', SEARCH_TRIGGER.test(message));
+  // 상품·경쟁력 질문이면 올려둔 월별 상품자료를 먼저 읽게 합니다.
+  let productDocs = [];
+  if (!urlMatch && PRODUCT_TRIGGER.test(message)) {
+    productDocs = await loadProductDocs(message);
+  }
+  const explicitWeb = /검색|인터넷|웹|뉴스|블로그|카페/.test(message);
+
+  // 학습 지식창고(블로그·영상 학습 노트, 표 자료)에서 질문과 가까운 내용을 찾습니다.
+  let knowledgeHits = [];
+  if (!urlMatch) {
+    try {
+      const lastUser = [...safeHistory].reverse().find(h => h.role === 'user');
+      const q = message.length < 25 && lastUser ? `${lastUser.content}\n${message}` : message;
+      knowledgeHits = await knowledge.search(q, 6, 0.3);
+    } catch (e) {
+      console.error('지식 검색 오류:', e.message);
+    }
+  }
+  console.log('[지식] 찾은 자료:', knowledgeHits.length, knowledgeHits.map(h => `${h.sourceName}:${h.score}`).join(','));
+
+  if (!urlMatch && SEARCH_TRIGGER.test(message) && ((productDocs.length === 0 && knowledgeHits.length === 0) || explicitWeb)) {
+    const found = await webSearch(message, safeHistory);
+    if (found && found.text) {
+      searchSources = found.sources;
+      pageContext += `\n\n[웹검색 결과 — 아래 내용을 근거로 답하고, 출처는 따로 붙이므로 본문에 URL을 적지 마세요. 검색 결과에 없는 내용은 지어내지 마세요.]\n${found.text}`;
+    } else {
+      pageContext += `\n\n[참고: 웹검색을 시도했지만 결과를 가져오지 못했습니다. 최신 정보는 확인하지 못했다고 솔직히 안내하고, 아는 범위에서만 답하세요.]`;
+    }
+  }
+
+  const productContext = productDocs.length
+    ? `\n\n[월별 보험사 상품자료 — ${productDocs[0].month}, 관리자가 등록한 자료]\n` +
+      `이 질문에는 반드시 아래 자료를 근거로 분석해서 답하세요. 규칙:\n` +
+      `- 자료에 있는 내용만 사용하고, 없는 보험료·수치·보장은 지어내지 말고 "자료에 없음"이라고 하세요.\n` +
+      `- 경쟁력 판단은 보장 범위, 보험료/환급률, 가입 조건, 갱신·면책 등 불리한 조건, 차별점, 설계사 판매 포인트 같은 기준을 먼저 한 줄로 밝히고, 기준별로 비교해 상위 몇 개를 근거와 함께 추천하세요.\n` +
+      `- 각 항목에 보험사명과 자료 제목을 함께 적으세요. 마지막에 "참고용 분석이며 최종 판단은 상품설명서·약관 확인 필요"를 한 줄로 덧붙이세요.\n` +
+      `- "정보를 제공할 수 없다"고 답하지 마세요. 자료가 부족하면 부족한 부분만 짚고 있는 자료로 최대한 분석하세요.\n\n` +
+      productDocs.map(d => `■ ${d.company} — ${d.title}${d.truncated ? ' (일부만 반영)' : ''}\n${d.content}`).join('\n\n')
+    : '';
+
+  const notices = [...new Set(knowledgeHits.map(h => h.notice).filter(Boolean))];
+  const knowledgeContext = knowledgeHits.length
+    ? `\n\n[학습 지식창고 — 관리자가 등록한 전문 자료에서 질문과 관련된 부분]\n` +
+      `규칙:\n` +
+      `- 질문과 실제로 관련 있는 자료만 활용하고, 관련 없으면 무시하세요.\n` +
+      `- "원칙/절차/판례/주의/상품조합/용어" 노트는 블로그·영상 내용을 정리한 학습 내용입니다. 문장을 그대로 옮기지 말고, 설계사가 고객에게 설명하기 쉽게 자신의 말로 풀어 쓰세요.\n` +
+      `- 판례·수치·보험료는 자료에 있는 값만 쓰고, 없으면 "자료에 없음"이라고 하세요. 지어내지 마세요.\n` +
+      `- "표자료"는 보험사별 보험료·조건 비교표입니다. 줄은 표의 행, " | "는 칸 구분입니다. 남/여, 연령, 납입기간, 가입금액 기준을 확인해 정확히 읽고, 기준이 다른 숫자를 섞어 비교하지 마세요.\n` +
+      `- "약관원문"은 보험사 약관 PDF의 해당 쪽을 글자 그대로 보관한 것입니다. 보장 범위·면책·지급 조건은 자료의 문구에 근거해 설명하고, 어느 상품·쪽인지 밝히세요. 자료에 없는 조항은 추측하지 말고 "올려진 약관에서 찾지 못했다"고 하세요. 약관은 가입 시점·개정 버전에 따라 다를 수 있으니 실제 계약의 약관 확인이 필요하다고 한 줄 덧붙이세요.\n` +
+      `- 활용한 자료의 번호를 JSON의 used 배열에 담으세요.\n` +
+      (notices.length ? `- 아래 자료에는 사용 제한이 있습니다. 답변 끝에 그 제한을 한 줄로 반드시 알려주세요: ${notices.join(' / ')}\n` : '') +
+      `\n` +
+      knowledgeHits.map((h, i) => `[자료${i + 1}] (${h.sourceName} — ${h.title}${h.page ? ' p.' + h.page : ''}${h.noteType ? ', ' + h.noteType : ''})\n${h.topic && !h.page ? '주제: ' + h.topic + '\n' : ''}${h.content}`).join('\n\n')
+    : '';
+  const heavyContext = productDocs.length > 0 || knowledgeHits.length > 0;
+
+  const systemPrompt = `당신은 설계사가 업무 중에 편하게 쓰는 만능 AI 비서입니다. 보험 업무 도우미이기 이전에, ChatGPT와 똑같이 세상 모든 주제에 대해 자연스럽게 대화하고 도와줄 수 있는 범용 AI입니다. 실제 대화 중 보험 얘기가 나오는 비중은 일부일 뿐이고, 대부분은 평범한 대화·잡담·게임·일반 지식 질문이라고 생각하고 응답하세요.
+
+가장 중요한 원칙 (절대 어기지 마세요):
+- 질문의 주제가 보험이 아니라는 이유로 "보험 관련 질문만 해주세요", "그런 건 도와드릴 수 없어요", "다른 질문을 해주세요" 같은 식으로 절대 거절하지 마세요. 이런 거절은 명백한 오류입니다.
+- 끝말잇기, 스무고개, 수수께끼 같은 말놀이를 하자고 하면 지금 바로 게임을 시작하세요. 예를 들어 끝말잇기면 당신이 먼저 단어를 하나 제시하고, 이전 대화에서 나온 단어를 기억해서 이어가세요.
+- 날씨, 시사, 계산, 상식, 번역, 글쓰기, 고민상담, 잡담 등 보험과 무관한 어떤 주제든 일반 ChatGPT처럼 적극적으로 도와주세요.
+- 아래 참고자료(약관/보상사례/영상 목록)는 질문이 "실제로" 보험 업무와 관련 있을 때만 사용하고, 그 외에는 완전히 무시하세요. 참고자료에 없는 내용이라고 모른다고 하지 말고, 당신이 알고 있는 일반 지식으로 답하세요.
+- 사용자가 메시지에 웹페이지 주소(URL)를 붙여넣으면, 아래 [사용자가 알려준 웹페이지 내용]에 그 페이지의 실제 글 내용이 들어있습니다. 이걸 바탕으로 요약하거나 질문에 답하세요. 페이지를 불러오지 못했다는 안내가 있으면 솔직히 그렇게 전달하세요.
+
+예시 (반드시 이런 식으로 응답하세요):
+- 사용자: "끝말잇기 하자" → reply: "좋아요! 제가 먼저 할게요. '사과'! 이제 '과'로 시작하는 단어를 말씀해주세요." (보험 얘기를 꺼내지 않음)
+- 사용자: "오늘 날씨 어때?" → 실시간 날씨는 알 수 없으니 그렇게 솔직히 답하고, 일반적인 조언(외출 전 날씨 앱 확인 등)을 자연스럽게 제공 (보험 얘기를 꺼내지 않음)
+- 사용자: "피보나치 수열이 뭐야?" → 일반 지식으로 설명 (보험 얘기를 꺼내지 않음)
+- 사용자: "암보험 면책기간이 어떻게 돼?" → 이때만 아래 약관 DB를 참고해서 답변
+
+아래는 보험 업무 질문일 때만 참고할 사내 데이터입니다.
+
+[약관 DB]
+${JSON.stringify(termsDb || [])}
+
+[보상사례 DB]
+${JSON.stringify(claimsDb || [])}
+
+[미디어(영상) DB] — 실제 영상 파일은 없는 데모이며 제목/태그만 있습니다. 사용자가 영상을 보여달라고 하면, 그중 관련 있는 제목을 1개~여러 개 골라 action.titles 배열에 정확히 그대로 담으세요 (하나를 임의로 골라 바로 재생하지 말고, 후보를 보여줘서 사용자가 직접 고르게 합니다). 관련 있는 영상이 하나도 없으면 action은 null로 하되, 딱딱하게 "준비되어 있지 않다"고만 하지 말고 지금 어떤 영상들이 있는지 안내하거나 다른 방식으로 도와줄 방법을 제안하세요.
+${JSON.stringify(mediaDb || [])}
+${pageContext}${productContext}${knowledgeContext}
+
+반드시 아래 JSON 형식으로만, 다른 설명 없이 답하세요 (마크다운 기호 없이 일반 문장으로):
+{
+  "reply": "화면에 보여줄 답변 (존댓말, 필요시 줄바꿈 포함)",
+  "speech": "음성으로 읽어줄 짧은 한두 문장 요약",
+  "action": null 또는 { "type": "media_list", "titles": ["미디어 DB의 title 값과 정확히 동일한 문자열", "..."] },
+  "used": [답변에 실제로 활용한 학습 지식창고 자료 번호들 (예: [1, 3]), 없으면 빈 배열]
+}`;
+
+  try {
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: heavyContext ? (process.env.ANALYSIS_MODEL || 'gpt-4.1-mini') : 'gpt-4o-mini',
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...safeHistory.map(h => ({ role: h.role, content: h.content })),
+          { role: 'user', content: message },
+        ],
+        max_tokens: heavyContext ? 1500 : 700,
+        temperature: heavyContext ? 0.3 : 0.7,
+      }),
+    });
+
+    if (!openaiRes.ok) {
+      const errText = await openaiRes.text();
+      console.error('AI 상담 API 오류:', errText);
+      return res.status(502).json({ error: 'AI 상담 서비스 호출에 실패했습니다.' });
+    }
+
+    const data = await openaiRes.json();
+    const raw = data.choices?.[0]?.message?.content || '{}';
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      parsed = { reply: raw, speech: raw, action: null };
+    }
+    let replyText = parsed.reply || '죄송합니다, 답변을 만들지 못했습니다. 다시 한 번 말씀해주세요.';
+    const usedIdx = Array.isArray(parsed.used)
+      ? [...new Set(parsed.used.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= knowledgeHits.length))]
+      : [];
+    if (usedIdx.length) {
+      const seenSrc = new Set();
+      const lines = [];
+      for (const n of usedIdx) {
+        const h = knowledgeHits[n - 1];
+        const label = h.page ? `${h.sourceName} p.${h.page}` : `「${h.title}」 — ${h.sourceName}`;
+        const key = label + (h.url || '');
+        if (seenSrc.has(key)) continue;
+        seenSrc.add(key);
+        lines.push(`${lines.length + 1}. ${label}${h.url ? '\n' + h.url : ''}`);
+      }
+      replyText += '\n\n📚 학습 자료 (정리된 내용 기준, 원문·약관 확인 권장)\n' + lines.join('\n');
+    }
+    if (searchSources.length) {
+      replyText += '\n\n📎 출처 (웹검색, 원문 확인 권장)\n' +
+        searchSources.slice(0, 5).map((s, i) => `${i + 1}. ${s.title || s.url}\n${s.url}`).join('\n');
+    }
+    res.json({
+      reply: replyText,
+      speech: parsed.speech || parsed.reply || '',
+      action: parsed.action || null,
+    });
+  } catch (err) {
+    console.error('AI 상담 처리 중 오류:', err);
+    res.status(500).json({ error: '서버 내부 오류' });
+  }
 });
 
-module.exports = { router, search, embedTexts, extractPdfPages, extractNaverPost, parseBlogId, parseYoutubeId, htmlToText, distill, saveDoc, learnFromText, invalidateCache };
+// ── 2) 첨부 사진/서류 분석 (OpenAI Vision) ──────────────────────
+app.post('/api/vision', upload.single('file'), async (req, res) => {
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: 'OPENAI_API_KEY 환경변수가 설정되지 않았습니다.' });
+  }
+  if (!req.file) {
+    return res.status(400).json({ error: '분석할 이미지가 전달되지 않았습니다.' });
+  }
+  const question = (req.body.question || '').trim() ||
+    '이 사진/서류에 어떤 내용이 담겨 있는지 설계사 업무 관점에서 요약해줘. 보험 관련 서류라면 상품명, 특약, 보장내용, 유의사항 등을 정리해줘.';
+
+  try {
+    const base64 = req.file.buffer.toString('base64');
+    const mime = req.file.mimetype || 'image/jpeg';
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: '당신은 보험설계사(리더스사업부)를 돕는 AI 비서입니다. 첨부된 이미지를 꼼꼼히 읽고, 한국어로 실무에 바로 도움이 되도록 답변하세요.' },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: question },
+              { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}` } },
+            ],
+          },
+        ],
+        max_tokens: 700,
+      }),
+    });
+
+    if (!openaiRes.ok) {
+      const errText = await openaiRes.text();
+      console.error('Vision API 오류:', errText);
+      return res.status(502).json({ error: '이미지 분석 서비스 호출에 실패했습니다.' });
+    }
+
+    const data = await openaiRes.json();
+    const answer = data.choices?.[0]?.message?.content || '내용을 분석하지 못했습니다.';
+    res.json({ answer });
+  } catch (err) {
+    console.error('이미지 분석 중 오류:', err);
+    res.status(500).json({ error: '서버 내부 오류' });
+  }
+});
+
+// ── 3) 로그인 / 회원가입 ──────────────────────────────────────
+app.use('/api/auth', authRoutes);
+
+// ── 4) 개인 일정 (카테고리별, 로그인 필요) ─────────────────────
+app.use('/api/schedule', scheduleRoutes);
+
+// ── 5) 관리자 전용 기능 (승인 관리, 약관/보상사례 관리) ──────────
+app.use('/api/admin/knowledge', verifyToken, requireSuperAdmin, knowledge.router);
+app.use('/api/admin', adminRoutes);
+
+// ── 6) 약관/보상사례 읽기 (로그인한 설계사 전체) ─────────────────
+app.use('/api/content', contentRoutes);
+
+// ── 7) 지사 목록 (회원가입 화면은 로그인 전이라 인증 없이 조회 가능) ─
+app.use('/api/branches', branchRoutes);
+
+const PORT = process.env.PORT || 3000;
+
+initDb()
+  .catch(err => console.error('DB 초기화 중 오류:', err))
+  .finally(() => {
+    app.listen(PORT, () => {
+      console.log(`리더스 AI 비서 백엔드 서버 실행 중 (port ${PORT})`);
+    });
+  });
