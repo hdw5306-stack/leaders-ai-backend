@@ -705,6 +705,25 @@ router.post('/blog/test', async (req, res) => {
   } catch (e) { console.error('블로그 시험 오류:', e); res.status(500).json({ error: e.message }); }
 });
 
+// 페이지 안의 링크(주소·onclick)와 .do/.ajax 같은 요청 주소를 뽑아 사이트 구조를 파악합니다.
+function extractLinks(html, baseUrl) {
+  const links = [];
+  const re = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(html)) && links.length < 150) {
+    const attrs = m[1];
+    const href = (attrs.match(/href\s*=\s*(["'])([\s\S]*?)\1/i) || [])[2] || '';
+    const onclick = (attrs.match(/onclick\s*=\s*(["'])([\s\S]*?)\1/i) || [])[2] || '';
+    const text = m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+    if (!href && !onclick) continue;
+    let abs = href;
+    if (href && !/^(javascript:|#|mailto:|tel:)/i.test(href)) { try { abs = new URL(href, baseUrl).href; } catch (e) { /* 그대로 */ } }
+    links.push({ text, href: abs, onclick: onclick.slice(0, 80) });
+  }
+  const endpoints = [...new Set((html.match(/["'][^"'\s]{2,120}\.(?:do|ajax|jsp|asp|aspx|json)(?:\?[^"'\s]{0,60})?["']/gi) || []).map(x => x.slice(1, -1)))].slice(0, 40);
+  return { links, endpoints };
+}
+
 // 약관 공시실 접속 시험: 서버가 외부 사이트를 열 수 있는지(차단 여부·형식)만 확인합니다. 저장하지 않습니다.
 router.post('/probe', async (req, res) => {
   const urls = (Array.isArray(req.body?.urls) ? req.body.urls : []).map(u => String(u).trim()).filter(Boolean).slice(0, 10);
@@ -717,7 +736,9 @@ router.post('/probe', async (req, res) => {
     const t0 = Date.now();
     const r = await fetchText(u, { timeout: 15000 });
     const text = r.text || '';
+    const struct = req.body?.links ? extractLinks(text, u) : null;
     out.push({
+      ...(struct ? { links: struct.links, endpoints: struct.endpoints } : {}),
       url: u, ok: r.ok, status: r.status, error: r.error || null, ms: Date.now() - t0, chars: text.length,
       pdf: text.startsWith('%PDF'),
       pdfLinks: (text.match(/\.pdf/gi) || []).length,
