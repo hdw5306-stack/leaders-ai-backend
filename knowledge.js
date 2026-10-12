@@ -408,7 +408,7 @@ async function runPdfVisionJob(job, { buffer, sourceName, title, notice, userId 
     console.error('PDF 이미지 학습 오류:', e);
     job.status = 'error'; job.message = e.message;
   } finally {
-    job.log = job.log.slice(-30);
+    job.log = job.log.slice(0, 4).concat(job.log.slice(4).slice(-30));
   }
 }
 
@@ -420,41 +420,75 @@ function parseBlogId(input) {
   return m ? m[1] : null;
 }
 
-async function listBlogPosts(blogId, maxPosts) {
+// 글 목록 읽기: 여러 방식을 차례로 시도하고, 각 방식의 결과를 diag에 남깁니다.
+// (네이버가 한 방식을 막거나 형식을 바꿔도 다른 방식으로 이어가도록)
+async function listBlogPosts(blogId, maxPosts, diag = []) {
   const posts = [];
   const seen = new Set();
-  for (let page = 1; posts.length < maxPosts && page <= 60; page++) {
-    const url = `https://blog.naver.com/PostTitleListAsync.naver?blogId=${blogId}&viewdate=&currentPage=${page}&categoryNo=0&parentCategoryNo=&countPerPage=30`;
-    const r = await fetchText(url);
-    if (!r.ok) break;
-    const chunks = r.text.split('{"logNo"').slice(1);
-    let added = 0;
-    for (const c of chunks) {
-      const no = (c.match(/^:"?(\d+)/) || [])[1];
-      if (!no || seen.has(no)) continue;
-      const rawTitle = (c.match(/"title":"([^"]*)"/) || [])[1] || '';
-      let title = rawTitle;
-      try { title = decodeURIComponent(rawTitle.replace(/\+/g, ' ')); } catch (e) { /* 그대로 */ }
-      seen.add(no);
-      posts.push({ logNo: no, title: decodeEntities(title) });
-      added++;
-      if (posts.length >= maxPosts) break;
+  const add = (no, title) => {
+    if (!no || seen.has(no) || posts.length >= maxPosts) return false;
+    seen.add(no);
+    posts.push({ logNo: String(no), title: decodeEntities(String(title || '').trim()) });
+    return true;
+  };
+  const dec = (t) => { try { return decodeURIComponent(String(t).replace(/\+/g, ' ')); } catch (e) { return String(t); } };
+
+  // 방식 1: PostTitleListAsync (PC 글 목록)
+  {
+    let n = 0, status = '';
+    for (let page = 1; posts.length < maxPosts && page <= 80; page++) {
+      const r = await fetchText(`https://blog.naver.com/PostTitleListAsync.naver?blogId=${blogId}&viewdate=&currentPage=${page}&categoryNo=0&parentCategoryNo=&countPerPage=30`,
+        { headers: { Referer: `https://blog.naver.com/${blogId}` } });
+      status = r.ok ? 'OK' : `HTTP ${r.status} ${r.error || ''}`;
+      if (!r.ok) break;
+      let added = 0;
+      for (const c of r.text.split('{"logNo"').slice(1)) {
+        const no = (c.match(/^:"?(\d+)/) || [])[1];
+        const t = (c.match(/"title":"([^"]*)"/) || [])[1] || '';
+        if (add(no, dec(t))) { added++; n++; }
+      }
+      if (!added) break;
+      await sleep(400);
     }
-    if (!added) break;
-    await sleep(400);
+    diag.push(`목록 방식1(PC): ${status}, ${n}건`);
   }
-  if (!posts.length) {
-    // 예비 경로: RSS (최근 글 위주)
+
+  // 방식 2: 모바일 블로그 API
+  if (posts.length < maxPosts) {
+    let n = 0, status = '';
+    for (let page = 1; posts.length < maxPosts && page <= 80; page++) {
+      const r = await fetchText(`https://m.blog.naver.com/api/blogs/${blogId}/post-list?categoryNo=0&itemCount=30&page=${page}`,
+        { headers: { Referer: `https://m.blog.naver.com/${blogId}`, Accept: 'application/json' } });
+      status = r.ok ? 'OK' : `HTTP ${r.status} ${r.error || ''}`;
+      if (!r.ok) break;
+      let list = [];
+      try {
+        const j = JSON.parse(r.text.slice(r.text.indexOf('{')));
+        list = j.result?.postList || j.postList || [];
+      } catch (e) { status = '응답 해석 실패'; break; }
+      let added = 0;
+      for (const it of list) {
+        if (add(it.logNo, it.titleWithInspectMessage || it.title)) { added++; n++; }
+      }
+      if (!added) break;
+      await sleep(400);
+    }
+    diag.push(`목록 방식2(모바일): ${status}, ${n}건`);
+  }
+
+  // 방식 3: RSS (최근 글 50건 안팎)
+  if (posts.length < maxPosts) {
+    let n = 0;
     const r = await fetchText(`https://rss.blog.naver.com/${blogId}.xml`);
     if (r.ok) {
       for (const it of r.text.split('<item>').slice(1)) {
         const link = (it.match(/<link>\s*(?:<!\[CDATA\[)?\s*([^<\]\s]+)/) || [])[1] || '';
         const no = (link.match(/\/(\d{6,})/) || [])[1];
         const title = (it.match(/<title>\s*(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?\s*<\/title>/) || [])[1] || '';
-        if (no && !seen.has(no)) { seen.add(no); posts.push({ logNo: no, title: decodeEntities(title.trim()) }); }
-        if (posts.length >= maxPosts) break;
+        if (add(no, title)) n++;
       }
     }
+    diag.push(`목록 방식3(RSS): ${r.ok ? 'OK' : 'HTTP ' + r.status}, ${n}건`);
   }
   return posts;
 }
@@ -488,7 +522,9 @@ let jobSeq = 0;
 async function runBlogJob(job, { blogId, maxPosts, sourceName, userId }) {
   try {
     job.status = 'listing';
-    const posts = await listBlogPosts(blogId, maxPosts);
+    const diag = [];
+    const posts = await listBlogPosts(blogId, maxPosts, diag);
+    job.log.push(...diag);
     job.total = posts.length;
     if (!posts.length) { job.status = 'error'; job.message = '글 목록을 가져오지 못했습니다. 블로그 주소/아이디를 확인하세요.'; return; }
     job.status = 'learning';
@@ -512,7 +548,7 @@ async function runBlogJob(job, { blogId, maxPosts, sourceName, userId }) {
   } catch (e) {
     job.status = 'error'; job.message = e.message;
   } finally {
-    job.log = job.log.slice(-30);
+    job.log = job.log.slice(0, 4).concat(job.log.slice(4).slice(-30));
   }
 }
 
@@ -642,8 +678,9 @@ router.post('/blog/test', async (req, res) => {
   const blogId = parseBlogId(req.body?.blog);
   if (!blogId) return res.status(400).json({ error: '블로그 주소나 아이디를 확인해주세요.' });
   try {
-    const posts = await listBlogPosts(blogId, 5);
-    if (!posts.length) return res.json({ ok: false, message: '글 목록을 가져오지 못했습니다. (서버에서 네이버 접속이 막혔거나 주소가 틀렸을 수 있습니다)' });
+    const diag = [];
+    const posts = await listBlogPosts(blogId, 5, diag);
+    if (!posts.length) return res.json({ ok: false, message: '글 목록을 가져오지 못했습니다. (서버에서 네이버 접속이 막혔거나 주소가 틀렸을 수 있습니다) ' + diag.join(' / ') });
     let first = null;
     for (const p of posts) {
       const post = await fetchBlogPost(blogId, p.logNo);
@@ -658,7 +695,7 @@ router.post('/blog/test', async (req, res) => {
 router.post('/blog/start', async (req, res) => {
   const blogId = parseBlogId(req.body?.blog);
   if (!blogId) return res.status(400).json({ error: '블로그 주소나 아이디를 확인해주세요.' });
-  const maxPosts = Math.max(1, Math.min(Number(req.body?.maxPosts) || 100, 500));
+  const maxPosts = Math.max(1, Math.min(Number(req.body?.maxPosts) || 100, 2000));
   const sourceName = String(req.body?.sourceName || `네이버 블로그 ${blogId}`).trim();
   const id = String(++jobSeq);
   const job = { id, status: 'starting', total: 0, done: 0, learned: 0, notes: 0, skipped: 0, failed: 0, log: [], message: '' };
