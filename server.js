@@ -35,15 +35,16 @@
 const express = require('express');
 const multer = require('multer');
 const FormData = require('form-data');
-const { initDb } = require('./db');
-const { router: authRoutes } = require('./auth');
+const { initDb, pool } = require('./db');
+const { router: authRoutes, verifyToken, requireSuperAdmin } = require('./auth');
+const knowledge = require('./knowledge');
 const scheduleRoutes = require('./schedule');
 const adminRoutes = require('./admin');
 const contentRoutes = require('./content');
 const branchRoutes = require('./branches');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 const upload = multer({ limits: { fileSize: 15 * 1024 * 1024 } }); // 오디오/이미지는 메모리에만 잠깐 보관 후 즉시 폐기, 15MB 제한
 
 // ── CORS 설정 ──────────────────────────────────────────────
@@ -270,6 +271,37 @@ async function webSearch(query, history, diag) {
   return weak;
 }
 
+// ── 월별 상품자료 불러오기 ─────────────────────────────────────
+// 상품·경쟁력·비교 같은 질문이면, 관리자가 올려둔 자료를 AI에게 읽혀서 분석하게 합니다.
+const PRODUCT_TRIGGER = /상품|경쟁력|비교|추천|보험사|생명|손해|특약|보험료|가입|보장|신상품|판매|시책|인기|유리|장단점/;
+const PRODUCT_CHAR_BUDGET = 70000;
+async function loadProductDocs(message) {
+  try {
+    const months = (await pool.query('SELECT DISTINCT month FROM product_docs ORDER BY month DESC')).rows.map(r => r.month);
+    if (!months.length) return [];
+    let target = months[0];
+    const mm = message.match(/(\d{1,2})\s*월/);
+    if (mm) {
+      const want = String(mm[1]).padStart(2, '0');
+      const found = months.find(m => m.endsWith('-' + want));
+      if (found) target = found;
+    }
+    const rows = (await pool.query(
+      'SELECT company, title, content, month FROM product_docs WHERE month = $1 ORDER BY company, id', [target]
+    )).rows;
+    const total = rows.reduce((n, r) => n + r.content.length, 0);
+    const ratio = total > PRODUCT_CHAR_BUDGET ? PRODUCT_CHAR_BUDGET / total : 1;
+    return rows.map(r => ({
+      ...r,
+      content: r.content.slice(0, Math.max(3000, Math.floor(r.content.length * ratio))),
+      truncated: ratio < 1,
+    }));
+  } catch (e) {
+    console.error('상품자료 조회 오류:', e.message);
+    return [];
+  }
+}
+
 // ── 1-2) AI 상담(대화형) ────────────────────────────────────────
 // 기존에는 질문 속 특정 단어("암" 등)만 보고 미리 정해둔 답 중 하나를
 // 고르는 방식이라 "암 수술 영상 보여줘" 같은 질문에 "암 진단비 청구
@@ -309,7 +341,27 @@ app.post('/api/chat', async (req, res) => {
   // URL이 없고 "검색/찾아줘/최신/뉴스" 같은 표현이 있으면 웹검색을 먼저 합니다.
   let searchSources = [];
   console.log('[채팅] 질문:', message.slice(0, 60), '| URL있음:', !!urlMatch, '| 검색조건:', SEARCH_TRIGGER.test(message));
-  if (!urlMatch && SEARCH_TRIGGER.test(message)) {
+  // 상품·경쟁력 질문이면 올려둔 월별 상품자료를 먼저 읽게 합니다.
+  let productDocs = [];
+  if (!urlMatch && PRODUCT_TRIGGER.test(message)) {
+    productDocs = await loadProductDocs(message);
+  }
+  const explicitWeb = /검색|인터넷|웹|뉴스|블로그|카페/.test(message);
+
+  // 학습 지식창고(블로그·영상 학습 노트, 표 자료)에서 질문과 가까운 내용을 찾습니다.
+  let knowledgeHits = [];
+  if (!urlMatch) {
+    try {
+      const lastUser = [...safeHistory].reverse().find(h => h.role === 'user');
+      const q = message.length < 25 && lastUser ? `${lastUser.content}\n${message}` : message;
+      knowledgeHits = await knowledge.search(q, 6, 0.3);
+    } catch (e) {
+      console.error('지식 검색 오류:', e.message);
+    }
+  }
+  console.log('[지식] 찾은 자료:', knowledgeHits.length, knowledgeHits.map(h => `${h.sourceName}:${h.score}`).join(','));
+
+  if (!urlMatch && SEARCH_TRIGGER.test(message) && ((productDocs.length === 0 && knowledgeHits.length === 0) || explicitWeb)) {
     const found = await webSearch(message, safeHistory);
     if (found && found.text) {
       searchSources = found.sources;
@@ -318,6 +370,31 @@ app.post('/api/chat', async (req, res) => {
       pageContext += `\n\n[참고: 웹검색을 시도했지만 결과를 가져오지 못했습니다. 최신 정보는 확인하지 못했다고 솔직히 안내하고, 아는 범위에서만 답하세요.]`;
     }
   }
+
+  const productContext = productDocs.length
+    ? `\n\n[월별 보험사 상품자료 — ${productDocs[0].month}, 관리자가 등록한 자료]\n` +
+      `이 질문에는 반드시 아래 자료를 근거로 분석해서 답하세요. 규칙:\n` +
+      `- 자료에 있는 내용만 사용하고, 없는 보험료·수치·보장은 지어내지 말고 "자료에 없음"이라고 하세요.\n` +
+      `- 경쟁력 판단은 보장 범위, 보험료/환급률, 가입 조건, 갱신·면책 등 불리한 조건, 차별점, 설계사 판매 포인트 같은 기준을 먼저 한 줄로 밝히고, 기준별로 비교해 상위 몇 개를 근거와 함께 추천하세요.\n` +
+      `- 각 항목에 보험사명과 자료 제목을 함께 적으세요. 마지막에 "참고용 분석이며 최종 판단은 상품설명서·약관 확인 필요"를 한 줄로 덧붙이세요.\n` +
+      `- "정보를 제공할 수 없다"고 답하지 마세요. 자료가 부족하면 부족한 부분만 짚고 있는 자료로 최대한 분석하세요.\n\n` +
+      productDocs.map(d => `■ ${d.company} — ${d.title}${d.truncated ? ' (일부만 반영)' : ''}\n${d.content}`).join('\n\n')
+    : '';
+
+  const notices = [...new Set(knowledgeHits.map(h => h.notice).filter(Boolean))];
+  const knowledgeContext = knowledgeHits.length
+    ? `\n\n[학습 지식창고 — 관리자가 등록한 전문 자료에서 질문과 관련된 부분]\n` +
+      `규칙:\n` +
+      `- 질문과 실제로 관련 있는 자료만 활용하고, 관련 없으면 무시하세요.\n` +
+      `- "원칙/절차/판례/주의/상품조합/용어" 노트는 블로그·영상 내용을 정리한 학습 내용입니다. 문장을 그대로 옮기지 말고, 설계사가 고객에게 설명하기 쉽게 자신의 말로 풀어 쓰세요.\n` +
+      `- 판례·수치·보험료는 자료에 있는 값만 쓰고, 없으면 "자료에 없음"이라고 하세요. 지어내지 마세요.\n` +
+      `- "표자료"는 보험사별 보험료·조건 비교표입니다. 줄은 표의 행, " | "는 칸 구분입니다. 남/여, 연령, 납입기간, 가입금액 기준을 확인해 정확히 읽고, 기준이 다른 숫자를 섞어 비교하지 마세요.\n` +
+      `- 활용한 자료의 번호를 JSON의 used 배열에 담으세요.\n` +
+      (notices.length ? `- 아래 자료에는 사용 제한이 있습니다. 답변 끝에 그 제한을 한 줄로 반드시 알려주세요: ${notices.join(' / ')}\n` : '') +
+      `\n` +
+      knowledgeHits.map((h, i) => `[자료${i + 1}] (${h.sourceName} — ${h.title}${h.page ? ' p.' + h.page : ''}${h.noteType ? ', ' + h.noteType : ''})\n${h.topic && !h.page ? '주제: ' + h.topic + '\n' : ''}${h.content}`).join('\n\n')
+    : '';
+  const heavyContext = productDocs.length > 0 || knowledgeHits.length > 0;
 
   const systemPrompt = `당신은 설계사가 업무 중에 편하게 쓰는 만능 AI 비서입니다. 보험 업무 도우미이기 이전에, ChatGPT와 똑같이 세상 모든 주제에 대해 자연스럽게 대화하고 도와줄 수 있는 범용 AI입니다. 실제 대화 중 보험 얘기가 나오는 비중은 일부일 뿐이고, 대부분은 평범한 대화·잡담·게임·일반 지식 질문이라고 생각하고 응답하세요.
 
@@ -344,13 +421,14 @@ ${JSON.stringify(claimsDb || [])}
 
 [미디어(영상) DB] — 실제 영상 파일은 없는 데모이며 제목/태그만 있습니다. 사용자가 영상을 보여달라고 하면, 그중 관련 있는 제목을 1개~여러 개 골라 action.titles 배열에 정확히 그대로 담으세요 (하나를 임의로 골라 바로 재생하지 말고, 후보를 보여줘서 사용자가 직접 고르게 합니다). 관련 있는 영상이 하나도 없으면 action은 null로 하되, 딱딱하게 "준비되어 있지 않다"고만 하지 말고 지금 어떤 영상들이 있는지 안내하거나 다른 방식으로 도와줄 방법을 제안하세요.
 ${JSON.stringify(mediaDb || [])}
-${pageContext}
+${pageContext}${productContext}${knowledgeContext}
 
 반드시 아래 JSON 형식으로만, 다른 설명 없이 답하세요 (마크다운 기호 없이 일반 문장으로):
 {
   "reply": "화면에 보여줄 답변 (존댓말, 필요시 줄바꿈 포함)",
   "speech": "음성으로 읽어줄 짧은 한두 문장 요약",
-  "action": null 또는 { "type": "media_list", "titles": ["미디어 DB의 title 값과 정확히 동일한 문자열", "..."] }
+  "action": null 또는 { "type": "media_list", "titles": ["미디어 DB의 title 값과 정확히 동일한 문자열", "..."] },
+  "used": [답변에 실제로 활용한 학습 지식창고 자료 번호들 (예: [1, 3]), 없으면 빈 배열]
 }`;
 
   try {
@@ -361,15 +439,15 @@ ${pageContext}
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: heavyContext ? (process.env.ANALYSIS_MODEL || 'gpt-4.1-mini') : 'gpt-4o-mini',
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: systemPrompt },
           ...safeHistory.map(h => ({ role: h.role, content: h.content })),
           { role: 'user', content: message },
         ],
-        max_tokens: 700,
-        temperature: 0.7,
+        max_tokens: heavyContext ? 1500 : 700,
+        temperature: heavyContext ? 0.3 : 0.7,
       }),
     });
 
@@ -388,6 +466,22 @@ ${pageContext}
       parsed = { reply: raw, speech: raw, action: null };
     }
     let replyText = parsed.reply || '죄송합니다, 답변을 만들지 못했습니다. 다시 한 번 말씀해주세요.';
+    const usedIdx = Array.isArray(parsed.used)
+      ? [...new Set(parsed.used.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= knowledgeHits.length))]
+      : [];
+    if (usedIdx.length) {
+      const seenSrc = new Set();
+      const lines = [];
+      for (const n of usedIdx) {
+        const h = knowledgeHits[n - 1];
+        const label = h.page ? `${h.sourceName} p.${h.page}` : `「${h.title}」 — ${h.sourceName}`;
+        const key = label + (h.url || '');
+        if (seenSrc.has(key)) continue;
+        seenSrc.add(key);
+        lines.push(`${lines.length + 1}. ${label}${h.url ? '\n' + h.url : ''}`);
+      }
+      replyText += '\n\n📚 학습 자료 (정리된 내용 기준, 원문·약관 확인 권장)\n' + lines.join('\n');
+    }
     if (searchSources.length) {
       replyText += '\n\n📎 출처 (웹검색, 원문 확인 권장)\n' +
         searchSources.slice(0, 5).map((s, i) => `${i + 1}. ${s.title || s.url}\n${s.url}`).join('\n');
@@ -461,6 +555,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/schedule', scheduleRoutes);
 
 // ── 5) 관리자 전용 기능 (승인 관리, 약관/보상사례 관리) ──────────
+app.use('/api/admin/knowledge', verifyToken, requireSuperAdmin, knowledge.router);
 app.use('/api/admin', adminRoutes);
 
 // ── 6) 약관/보상사례 읽기 (로그인한 설계사 전체) ─────────────────
