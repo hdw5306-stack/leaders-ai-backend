@@ -420,6 +420,24 @@ function parseBlogId(input) {
   return m ? m[1] : null;
 }
 
+
+// 응답이 JSON이든 깨진 JSON이든 상관없이 "logNo"가 들어 있는 객체마다 번호와 제목을 뽑습니다.
+function parseLogNos(text) {
+  const out = [];
+  const re = /"logNo"\s*:\s*"?(\d{6,})"?/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const start = text.lastIndexOf('{', m.index);
+    let end = text.indexOf('}', m.index);
+    if (end < 0) end = Math.min(text.length, m.index + 2000);
+    const seg = text.slice(Math.max(0, start), end + 1);
+    const t = (seg.match(/"(?:titleWithInspectMessage|title)"\s*:\s*"((?:[^"\\]|\\.)*)"/) || [])[1] || '';
+    out.push({ no: m[1], title: t });
+  }
+  return out;
+}
+const snip = (t) => String(t || '').replace(/\s+/g, ' ').slice(0, 160);
+
 // 글 목록 읽기: 여러 방식을 차례로 시도하고, 각 방식의 결과를 diag에 남깁니다.
 // (네이버가 한 방식을 막거나 형식을 바꿔도 다른 방식으로 이어가도록)
 async function listBlogPosts(blogId, maxPosts, diag = []) {
@@ -442,11 +460,10 @@ async function listBlogPosts(blogId, maxPosts, diag = []) {
       status = r.ok ? 'OK' : `HTTP ${r.status} ${r.error || ''}`;
       if (!r.ok) break;
       let added = 0;
-      for (const c of r.text.split('{"logNo"').slice(1)) {
-        const no = (c.match(/^:"?(\d+)/) || [])[1];
-        const t = (c.match(/"title":"([^"]*)"/) || [])[1] || '';
-        if (add(no, dec(t))) { added++; n++; }
+      for (const it of parseLogNos(r.text)) {
+        if (add(it.no, dec(it.title.replace(/\\"/g, '"')))) { added++; n++; }
       }
+      if (page === 1 && !added) status = '형식 불명: ' + snip(r.text);
       if (!added) break;
       await sleep(400);
     }
@@ -461,15 +478,11 @@ async function listBlogPosts(blogId, maxPosts, diag = []) {
         { headers: { Referer: `https://m.blog.naver.com/${blogId}`, Accept: 'application/json' } });
       status = r.ok ? 'OK' : `HTTP ${r.status} ${r.error || ''}`;
       if (!r.ok) break;
-      let list = [];
-      try {
-        const j = JSON.parse(r.text.slice(r.text.indexOf('{')));
-        list = j.result?.postList || j.postList || [];
-      } catch (e) { status = '응답 해석 실패'; break; }
       let added = 0;
-      for (const it of list) {
-        if (add(it.logNo, it.titleWithInspectMessage || it.title)) { added++; n++; }
+      for (const it of parseLogNos(r.text)) {
+        if (add(it.no, dec(it.title.replace(/\\"/g, '"')))) { added++; n++; }
       }
+      if (page === 1 && !added) status = '형식 불명: ' + snip(r.text);
       if (!added) break;
       await sleep(400);
     }
