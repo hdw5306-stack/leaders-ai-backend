@@ -107,7 +107,7 @@ async function throttleEmbed(tokens) {
   embedWindow.push({ t: Date.now(), tokens });
 }
 
-async function embedTexts(texts) {
+async function embedTexts(texts, onProgress) {
   const out = [];
   for (let i = 0; i < texts.length; i += 50) {
     const batch = texts.slice(i, i + 50).map(t => String(t).slice(0, 6000));
@@ -133,6 +133,7 @@ async function embedTexts(texts) {
       throw new Error('임베딩 실패: ' + body.slice(0, 200));
     }
     for (const d of data.data) out.push(normalize(d.embedding));
+    if (onProgress) onProgress(Math.min(i + 50, texts.length), texts.length);
   }
   return out;
 }
@@ -244,10 +245,10 @@ async function docExists(url) {
 }
 
 // entries: [{topic, type, content, keywords, page}]
-async function saveDoc({ sourceType, sourceName, title, url, notice, mode, entries, userId }) {
+async function saveDoc({ sourceType, sourceName, title, url, notice, mode, entries, userId, onProgress }) {
   if (!entries.length) return { docId: null, saved: 0 };
   const embedInputs = entries.map(e => `${e.topic || ''}\n${e.content}\n${(e.keywords || []).join(' ')}`);
-  const vecs = await embedTexts(embedInputs);
+  const vecs = await embedTexts(embedInputs, onProgress);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -573,6 +574,28 @@ async function fetchBlogPost(blogId, logNo) {
 const jobs = new Map();
 let jobSeq = 0;
 
+// 약관 PDF: 올리기만 먼저 받고, 검색용 숫자 변환·저장은 서버 안에서 따로 진행합니다 (긴 요청이 끊기지 않도록).
+const termsInFlight = new Set();
+async function runTermsJob(job, { pages, sourceName, title, notice, userId, key }) {
+  try {
+    const entries = pagesToEntries(pages, title, '약관원문');
+    if (!entries.length) { job.status = 'error'; job.message = '저장할 내용이 없습니다.'; return; }
+    job.total = entries.length;
+    console.log(`[지식] 약관 처리 시작: ${title} (${pages.length}쪽, ${entries.length}조각)`);
+    const r = await saveDoc({
+      sourceType: 'terms', sourceName, title, url: null, notice, mode: 'data', entries, userId,
+      onProgress: (d) => { job.done = d; },
+    });
+    job.learned = 1; job.notes = r.saved; job.done = job.total; job.status = 'done';
+    console.log(`[지식] 약관 저장 완료: ${title} (${r.saved}조각)`);
+  } catch (e) {
+    job.status = 'error'; job.message = e.message;
+    console.error('[지식] 약관 저장 오류:', title, e.message);
+  } finally {
+    termsInFlight.delete(key);
+  }
+}
+
 async function runBlogJob(job, { blogId, maxPosts, sourceName, userId }) {
   try {
     job.status = 'listing';
@@ -714,6 +737,16 @@ router.post('/pdf', upload.single('file'), async (req, res) => {
     let notice = String(req.body.notice || '').trim();
     if (!notice && /사내\s*교육용/.test(pages.slice(0, 3).map(p => p.text).join(' '))) {
       notice = '사내 교육용 자료입니다. 보험 안내자료로 사용하거나 외부에 공유할 수 없습니다. 고객 안내는 가입설계서·상품설명서·약관 기준으로 하세요.';
+    }
+    if (isTerms) {
+      const key = `${sourceName}|${title}`;
+      if (termsInFlight.has(key)) return res.json({ ok: true, skipped: true, reason: '이미 처리 중인 파일입니다.' });
+      termsInFlight.add(key);
+      const id = String(++jobSeq);
+      const job = { id, status: 'learning', total: 0, done: 0, learned: 0, notes: 0, skipped: 0, failed: 0, log: [], message: '', pages: pages.length };
+      jobs.set(id, job);
+      runTermsJob(job, { pages, sourceName, title, notice, userId: req.userId, key });
+      return res.json({ ok: true, jobId: id, pages: pages.length });
     }
     if (req.body.mode === 'vision' && !isTerms) {
       const id = String(++jobSeq);
