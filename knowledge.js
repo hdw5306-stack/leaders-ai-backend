@@ -13,6 +13,7 @@
  */
 
 const express = require('express');
+const path = require('path');
 const multer = require('multer');
 const { pool } = require('./db');
 
@@ -70,6 +71,17 @@ function htmlToText(html) {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// 한글 PDF는 글꼴 정보(CMap)가 필요한 경우가 있어 pdfjs에 경로를 알려줍니다. (없으면 글자가 비어서 읽힘)
+let PDF_ASSETS = {};
+try {
+  const pdfBase = path.dirname(require.resolve('pdfjs-dist/package.json'));
+  PDF_ASSETS = {
+    cMapUrl: path.join(pdfBase, 'cmaps') + path.sep, cMapPacked: true,
+    standardFontDataUrl: path.join(pdfBase, 'standard_fonts') + path.sep,
+  };
+} catch (e) { console.warn('[지식] pdfjs 글꼴 경로를 찾지 못했습니다:', e.message); }
+
 
 /* ───────────────────────── 임베딩 / 검색 ───────────────────────── */
 
@@ -279,7 +291,7 @@ async function learnFromText({ sourceType, sourceName, title, url, text, notice,
 async function extractPdfPages(buffer) {
   const pdfjs = require('pdfjs-dist/legacy/build/pdf.js');
   const doc = await pdfjs.getDocument({
-    data: new Uint8Array(buffer), useSystemFonts: true, disableFontFace: true, isEvalSupported: false,
+    data: new Uint8Array(buffer), useSystemFonts: true, disableFontFace: true, isEvalSupported: false, ...PDF_ASSETS,
   }).promise;
   const pages = [];
   for (let p = 1; p <= doc.numPages; p++) {
@@ -346,7 +358,7 @@ async function openPdfForRender(buffer) {
     destroy(c) { c.canvas.width = 0; c.canvas.height = 0; }
   }
   const doc = await pdfjs.getDocument({
-    data: new Uint8Array(buffer), useSystemFonts: true, disableFontFace: true, isEvalSupported: false, canvasFactory: new Factory(),
+    data: new Uint8Array(buffer), useSystemFonts: true, disableFontFace: true, isEvalSupported: false, canvasFactory: new Factory(), ...PDF_ASSETS,
   }).promise;
   return {
     numPages: doc.numPages,
