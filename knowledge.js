@@ -93,48 +93,62 @@ function normalize(vec) {
 }
 
 // OpenAI 임베딩은 분당 사용량 한도가 있어서(조직 기준), 큰 약관을 연속으로 올리면 한도에 걸립니다.
-// 최근 1분 사용량을 추정해 미리 속도를 늦추고, 그래도 한도 오류(429)가 나면 기다렸다가 다시 시도합니다.
+// 요청 전에 사용량을 대략 예약하고, 응답에 오는 실제 사용량으로 바로잡아서 한도 직전까지만 빠르게 보냅니다.
+// 그래도 한도 오류(429)가 나면 안내된 시간만큼 기다렸다가 다시 시도합니다.
 const embedWindow = [];
 async function throttleEmbed(tokens) {
-  const LIMIT = 600000; // 분당 한도(100만)보다 넉넉히 낮게
+  const LIMIT = 850000; // 조직 한도(분당 100만) 아래로
   for (;;) {
     const now = Date.now();
     while (embedWindow.length && now - embedWindow[0].t > 60000) embedWindow.shift();
     const used = embedWindow.reduce((n, x) => n + x.tokens, 0);
     if (used + tokens <= LIMIT || !embedWindow.length) break;
-    await sleep(Math.max(1000, 60000 - (now - embedWindow[0].t) + 300));
+    await sleep(Math.max(500, 60000 - (now - embedWindow[0].t) + 300));
   }
-  embedWindow.push({ t: Date.now(), tokens });
+  const entry = { t: Date.now(), tokens };
+  embedWindow.push(entry);
+  return entry;
 }
 
 async function embedTexts(texts, onProgress) {
-  const out = [];
-  for (let i = 0; i < texts.length; i += 50) {
-    const batch = texts.slice(i, i + 50).map(t => String(t).slice(0, 6000));
-    await throttleEmbed(Math.ceil(batch.reduce((n, t) => n + t.length, 0) * 0.9));
-    let data = null;
-    for (let attempt = 1; attempt <= 8; attempt++) {
-      const r = await fetch('https://api.openai.com/v1/embeddings', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: EMBED_MODEL, input: batch, dimensions: EMBED_DIMS }),
-      });
-      if (r.ok) { data = await r.json(); break; }
-      const body = await r.text();
-      if ((r.status === 429 || r.status >= 500) && attempt < 8) {
-        // "Please try again in 1m3.5s" / "in 820ms" 형태의 안내를 읽어 그만큼 기다립니다.
-        const m = body.match(/try again in\s+(?:(\d+)m)?\s*([\d.]+)(ms|s)/i);
-        let wait = 5000 * attempt;
-        if (m) wait = ((Number(m[1] || 0) * 60) + (m[3] === 'ms' ? Number(m[2]) / 1000 : Number(m[2]))) * 1000 + 1500;
-        console.log(`[지식] 임베딩 대기 ${Math.round(wait / 1000)}초 (시도 ${attempt}, 상태 ${r.status})`);
-        await sleep(Math.min(wait, 70000));
-        continue;
+  const BATCH = 100, CONCURRENCY = 3;
+  const batches = [];
+  for (let i = 0; i < texts.length; i += BATCH) batches.push({ start: i, items: texts.slice(i, i + BATCH).map(t => String(t).slice(0, 6000)) });
+  const out = new Array(texts.length);
+  let next = 0, done = 0;
+  async function worker() {
+    for (;;) {
+      const bi = next++;
+      if (bi >= batches.length) return;
+      const b = batches[bi];
+      const entry = await throttleEmbed(Math.ceil(b.items.reduce((n, t) => n + t.length, 0) * 0.5)); // 한글은 글자당 약 0.4~0.5 토큰
+      let data = null;
+      for (let attempt = 1; attempt <= 8; attempt++) {
+        const r = await fetch('https://api.openai.com/v1/embeddings', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: EMBED_MODEL, input: b.items, dimensions: EMBED_DIMS }),
+        });
+        if (r.ok) { data = await r.json(); break; }
+        const body = await r.text();
+        if ((r.status === 429 || r.status >= 500) && attempt < 8) {
+          // "Please try again in 1m3.5s" / "in 820ms" 형태의 안내를 읽어 그만큼 기다립니다.
+          const m = body.match(/try again in\s+(?:(\d+)m)?\s*([\d.]+)(ms|s)/i);
+          let wait = 5000 * attempt;
+          if (m) wait = ((Number(m[1] || 0) * 60) + (m[3] === 'ms' ? Number(m[2]) / 1000 : Number(m[2]))) * 1000 + 1500;
+          console.log(`[지식] 임베딩 대기 ${Math.round(wait / 1000)}초 (시도 ${attempt}, 상태 ${r.status})`);
+          await sleep(Math.min(wait, 70000));
+          continue;
+        }
+        throw new Error('임베딩 실패: ' + body.slice(0, 200));
       }
-      throw new Error('임베딩 실패: ' + body.slice(0, 200));
+      if (data.usage && data.usage.total_tokens) entry.tokens = data.usage.total_tokens; // 실제 사용량으로 바로잡기
+      data.data.forEach((d, j) => { out[b.start + (d.index != null ? d.index : j)] = normalize(d.embedding); });
+      done += b.items.length;
+      if (onProgress) onProgress(Math.min(done, texts.length), texts.length);
     }
-    for (const d of data.data) out.push(normalize(d.embedding));
-    if (onProgress) onProgress(Math.min(i + 50, texts.length), texts.length);
   }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batches.length) }, worker));
   return out;
 }
 
@@ -173,7 +187,7 @@ async function search(query, k = 6, minScore = 0.3) {
   const picked = [];
   for (const x of scored) {
     const n = perDoc.get(x.it.docId) || 0;
-    if (n >= 3) continue; // 한 자료에서 3개까지만 (다양하게)
+    if (n >= (x.it.sourceType === 'terms' ? 6 : 3)) continue; // 한 자료에서 3개까지만(다양하게). 약관은 한 파일이 방대해서 6개까지
     perDoc.set(x.it.docId, n + 1);
     const { vec, ...rest } = x.it;
     picked.push({ ...rest, score: Number(x.score.toFixed(3)) });
@@ -245,7 +259,12 @@ async function docExists(url) {
 }
 
 // entries: [{topic, type, content, keywords, page}]
+// PDF에서 뽑은 글자에는 널(NUL)·제어 문자가 섞이는 경우가 있고, Postgres는 이를 저장하지 못합니다.
+const cleanText = (v) => String(v == null ? '' : v).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '');
+
 async function saveDoc({ sourceType, sourceName, title, url, notice, mode, entries, userId, onProgress }) {
+  entries = (entries || []).map(e => ({ ...e, topic: e.topic == null ? e.topic : cleanText(e.topic), content: cleanText(e.content) }));
+  title = cleanText(title); notice = notice ? cleanText(notice) : notice;
   if (!entries.length) return { docId: null, saved: 0 };
   const embedInputs = entries.map(e => `${e.topic || ''}\n${e.content}\n${(e.keywords || []).join(' ')}`);
   const vecs = await embedTexts(embedInputs, onProgress);
@@ -258,13 +277,15 @@ async function saveDoc({ sourceType, sourceName, title, url, notice, mode, entri
       [sourceType, sourceName, String(title).slice(0, 300), url || null, notice || null, mode, userId || null]
     );
     const docId = d.rows[0].id;
-    for (let i = 0; i < entries.length; i++) {
-      const e = entries[i];
-      await client.query(
-        `INSERT INTO knowledge_chunks (doc_id, topic, note_type, content, page, embedding)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [docId, e.topic || null, e.type || null, e.content, e.page || null, JSON.stringify(vecs[i])]
-      );
+    for (let st = 0; st < entries.length; st += 100) {
+      const part = entries.slice(st, st + 100);
+      const vals = [], params = [];
+      part.forEach((e, j) => {
+        const o = j * 6;
+        vals.push(`($${o + 1},$${o + 2},$${o + 3},$${o + 4},$${o + 5},$${o + 6})`);
+        params.push(docId, e.topic || null, e.type || null, e.content, e.page || null, JSON.stringify(vecs[st + j]));
+      });
+      await client.query(`INSERT INTO knowledge_chunks (doc_id, topic, note_type, content, page, embedding) VALUES ${vals.join(',')}`, params);
     }
     await client.query('COMMIT');
     invalidateCache();
