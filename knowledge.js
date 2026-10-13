@@ -870,6 +870,49 @@ router.post('/probe', async (req, res) => {
   res.json({ items: out });
 });
 
+// 보험사 공시실 일괄 진단: 회사별로 열리는지, 약관 파일 링크가 보이는지, 동적 화면인지 한 번에 점검합니다(저장 안 함).
+async function runDiagnoseJob(job, companies) {
+  job.status = 'running'; job.total = companies.length; job.results = [];
+  for (const c of companies) {
+    if (job.cancel) break;
+    const row = { name: c.name, url: c.url };
+    try {
+      const t0 = Date.now();
+      const r = await fetchText(c.url, { timeout: 20000 });
+      const html = r.text || '';
+      row.ok = !!r.ok; row.status = r.status || 0; row.error = r.error || null; row.ms = Date.now() - t0; row.chars = html.length;
+      const s = extractLinks(html, c.url);
+      row.links = s.links.length;
+      row.pdfLinks = (html.match(/\.pdf/gi) || []).length;
+      row.fileLike = s.links.filter(l => /down|file|pdf|attach|fileSeq|약관|요약서|사업방법서/i.test(`${l.href} ${l.onclick} ${l.text}`)).length;
+      row.endpoints = s.endpoints.length;
+      row.sample = s.links.filter(l => /약관|pdf|down/i.test(`${l.href} ${l.onclick} ${l.text}`)).slice(0, 3).map(l => `${l.text || '-'} → ${l.href || l.onclick}`.slice(0, 160));
+      row.textLen = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().length;
+      row.hints = ['captcha', '보안문자', '자동입력방지', 'access denied', 'forbidden'].filter(k => html.toLowerCase().includes(k));
+      // 판정: 열림 + 파일 링크가 보임 → 자동 수집 가능성 높음 / 열리지만 링크 없음 → 동적(화면이 JS로 그려짐) / 실패 → 막힘
+      row.verdict = !row.ok ? '막힘' : (row.pdfLinks > 0 || row.fileLike > 0) ? '자동수집 가능성 높음' : (row.links > 5 ? '링크는 있으나 파일 없음(2단계 필요)' : '동적 화면(추가 분석 필요)');
+    } catch (e) { row.ok = false; row.error = e.message; row.verdict = '막힘'; }
+    job.results.push(row); job.done = job.results.length;
+    await sleep(300);
+  }
+  job.status = job.cancel ? 'cancelled' : 'done';
+}
+
+router.post('/diagnose', (req, res) => {
+  const list = (Array.isArray(req.body?.companies) ? req.body.companies : []).slice(0, 60)
+    .map(c => ({ name: String(c?.name || '').trim().slice(0, 40), url: String(c?.url || '').trim() }))
+    .filter(c => {
+      if (!c.name) return false;
+      try { const x = new URL(c.url); return /^https?:$/.test(x.protocol) && x.hostname.includes('.') && !/^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(x.hostname); } catch (e) { return false; }
+    });
+  if (!list.length) return res.status(400).json({ error: '진단할 주소가 없습니다.' });
+  const id = String(++jobSeq);
+  const job = { id, status: 'starting', total: list.length, done: 0, results: [], log: [], message: '' };
+  jobs.set(id, job);
+  runDiagnoseJob(job, list);
+  res.json({ ok: true, jobId: id });
+});
+
 router.post('/blog/start', async (req, res) => {
   const blogId = parseBlogId(req.body?.blog);
   if (!blogId) return res.status(400).json({ error: '블로그 주소나 아이디를 확인해주세요.' });
