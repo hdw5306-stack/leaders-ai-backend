@@ -1,0 +1,3253 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>리더스 AI 비서 — 프로토타입</title>
+
+<!-- 홈 화면에 앱처럼 설치되도록 하는 설정 (PWA) -->
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#0b1a33">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="리더스 AI 비서">
+<style>
+  @font-face {
+    font-family: 'Pretendard-fallback';
+    src: local('Malgun Gothic');
+  }
+
+  :root {
+    --navy-deep: #0b1a33;
+    --navy: #12274a;
+    --navy-soft: #1c3560;
+    --navy-line: #2a4270;
+    --paper: #f5f3ee;
+    --paper-card: #ffffff;
+    --gold: #c6a15b;
+    --gold-soft: #e4cd98;
+    --ink: #17213a;
+    --ink-muted: #5b6884;
+    --danger: #b5533f;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--paper);
+    font-family: "Noto Sans KR", "Pretendard-fallback", -apple-system, sans-serif;
+    color: var(--ink);
+  }
+
+  .app-frame {
+    max-width: 460px;
+    margin: 0 auto;
+    min-height: 100vh;
+    background: var(--paper);
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    box-shadow: 0 0 60px rgba(11,26,51,0.08);
+  }
+
+  /* ---------- Header / Avatar zone ---------- */
+  .stage {
+    background: radial-gradient(120% 100% at 50% 0%, #ffffff 0%, #f5f1e6 70%, #efe8d6 100%);
+    color: var(--ink);
+    padding: 18px 20px 10px;
+    border-bottom: 1px solid #e6e1d4;
+  }
+
+  .stage-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+
+  .brand {
+    font-family: "Noto Serif KR", serif;
+    font-size: 15px;
+    letter-spacing: 0.02em;
+    color: #9c7a3e;
+  }
+
+  .brand small {
+    display: block;
+    font-family: "Noto Sans KR", sans-serif;
+    font-size: 11px;
+    color: var(--ink-muted);
+    margin-top: 2px;
+    letter-spacing: 0;
+  }
+
+  .clock { font-size: 12px; color: var(--ink-muted); }
+
+  .avatar-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .avatar-orb {
+    width: 100%;
+    max-width: 300px;
+    height: 300px;
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    transition: filter 0.4s ease;
+    filter: drop-shadow(0 10px 22px rgba(0,0,0,0.35));
+  }
+
+  .avatar-orb.listening {
+    filter: drop-shadow(0 10px 22px rgba(0,0,0,0.35)) drop-shadow(0 0 26px rgba(198,161,91,0.45));
+    animation: breathe 1.4s ease-in-out infinite;
+  }
+
+  .avatar-orb.thinking .avatar-face .eye { animation: blink 0.9s steps(1) infinite; }
+  .avatar-orb.speaking .avatar-face .mouth { animation: talk 0.32s ease-in-out infinite; }
+
+  @keyframes breathe {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.02); }
+  }
+  @keyframes blink {
+    0%, 40% { opacity: 1; }
+    50% { opacity: 0.15; }
+    60%, 100% { opacity: 1; }
+  }
+  @keyframes talk {
+    0%, 100% { transform: scaleY(1); }
+    50% { transform: scaleY(1.9); }
+  }
+
+  .avatar-face { width: 44px; height: 44px; }
+  .avatar-face .eye { fill: var(--gold-soft); }
+  .avatar-face .mouth { fill: var(--gold); transform-origin: center; }
+
+  .avatar-status {
+    font-size: 13px;
+    color: var(--ink-muted);
+    min-height: 18px;
+  }
+
+  .avatar-status .dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--gold);
+    margin-right: 6px;
+  }
+
+  /* ---------- Voice waveform ---------- */
+  .wave-wrap {
+    height: 30px;
+    margin-top: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    opacity: 0.35;
+    transition: opacity 0.25s ease;
+  }
+  .wave-wrap.live { opacity: 1; }
+  .wave-bar {
+    width: 3.5px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--ink-muted);
+    transform-origin: center;
+    transition: height 0.07s ease, background-color 0.2s ease;
+  }
+  .wave-wrap.mode-listening .wave-bar { background: #b5533f; }
+  .wave-wrap.mode-speaking .wave-bar { background: #9c7a3e; }
+
+  /* ---------- Tabs ---------- */
+  .tabbar {
+    display: flex;
+    background: var(--paper-card);
+    border-bottom: 1px solid #e6e1d4;
+  }
+  .tabbtn {
+    flex: 1;
+    border: none;
+    background: none;
+    padding: 13px 6px 11px;
+    font-size: 13px;
+    color: var(--ink-muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    font-family: inherit;
+  }
+  .tabbtn.active {
+    color: var(--navy);
+    border-bottom-color: var(--gold);
+    font-weight: 600;
+  }
+
+  /* ---------- Panels ---------- */
+  .panel { display: none; flex: 1; flex-direction: column; min-height: 0; }
+  .panel.active { display: flex; }
+
+  /* Chat */
+  .chat-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 16px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .msg { max-width: 84%; padding: 10px 13px; border-radius: 14px; font-size: 14px; line-height: 1.55; }
+  .msg.user { align-self: flex-end; background: var(--navy); color: #f2f4f9; border-bottom-right-radius: 3px; }
+  .msg.bot { align-self: flex-start; background: var(--paper-card); border: 1px solid #e6e1d4; border-bottom-left-radius: 3px; }
+  .msg.bot .src {
+    display: block;
+    margin-top: 7px;
+    padding-top: 6px;
+    border-top: 1px dashed #ddd6c4;
+    font-size: 11px;
+    color: var(--ink-muted);
+  }
+  .msg.bot .src b { color: var(--navy); }
+  .msg.system { align-self: center; font-size: 11.5px; color: var(--ink-muted); background: #eee9dc; padding: 4px 10px; border-radius: 10px; }
+
+  .quick-row {
+    display: flex;
+    gap: 6px;
+    padding: 0 16px 10px;
+    flex-wrap: wrap;
+  }
+  .quick {
+    font-size: 12px;
+    border: 1px solid var(--navy-line);
+    color: var(--navy);
+    background: #fff;
+    border-radius: 16px;
+    padding: 6px 11px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .quick:hover { background: #f0ede2; }
+
+  .composer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-top: 1px solid #e6e1d4;
+    background: var(--paper-card);
+  }
+  .composer input[type=text] {
+    flex: 1;
+    border: 1px solid #d9d2bd;
+    border-radius: 20px;
+    padding: 10px 15px;
+    font-size: 14px;
+    font-family: inherit;
+    outline: none;
+    background: var(--paper);
+  }
+  .composer input[type=text]:focus { border-color: var(--gold); }
+
+  .icon-btn {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: none;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .send-btn { background: var(--navy); color: #fff; }
+  .mic-btn { background: var(--gold); color: var(--navy-deep); position: relative; }
+  .mic-btn.active {
+    background: var(--danger);
+    color: #fff;
+    animation: pulse 1s infinite;
+  }
+  .mic-btn.continuous {
+    box-shadow: 0 0 0 3px var(--navy);
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(181,83,63,0.5); }
+    70% { box-shadow: 0 0 0 10px rgba(181,83,63,0); }
+    100% { box-shadow: 0 0 0 0 rgba(181,83,63,0); }
+  }
+  .attach-btn { background: #efece3; color: var(--navy); }
+
+  /* ---------- Chat attachment preview & image bubble ---------- */
+  .attach-preview {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-top: 1px solid #e6e1d4;
+    background: var(--paper-card);
+  }
+  .attach-preview.show { display: flex; }
+  .attach-preview img { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; border: 1px solid #d9d2bd; }
+  .attach-preview .name { flex: 1; font-size: 12.5px; color: var(--ink-muted); word-break: break-all; }
+  .attach-preview .remove {
+    background: none; border: none; color: var(--danger); font-size: 12px; cursor: pointer; text-decoration: underline;
+  }
+  .msg img.chat-photo {
+    display: block; max-width: 220px; max-height: 220px; border-radius: 10px; margin-bottom: 6px; object-fit: cover;
+  }
+
+  /* Schedule panel */
+  .list-wrap { padding: 16px; overflow-y: auto; flex: 1; }
+  .section-label { font-size: 12px; color: var(--ink-muted); margin: 4px 0 8px; }
+  .card {
+    background: var(--paper-card);
+    border: 1px solid #e6e1d4;
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 9px;
+  }
+  .card .time { font-size: 12px; color: var(--gold); font-weight: 600; }
+  .card .title { font-size: 14.5px; margin: 3px 0 2px; }
+  .card .meta { font-size: 12px; color: var(--ink-muted); }
+  .card .remind-btn {
+    margin-top: 8px;
+    font-size: 12px;
+    border: 1px solid var(--navy-line);
+    background: none;
+    color: var(--navy);
+    padding: 5px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .empty-note { font-size: 13px; color: var(--ink-muted); text-align: center; padding: 30px 10px; }
+
+  /* 채팅 중 영상 후보 목록(클릭해서 재생) */
+  .media-pick-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+  .media-pick-btn {
+    text-align: left;
+    font-size: 13px;
+    border: 1px solid var(--navy-line);
+    background: #fff;
+    color: var(--navy);
+    padding: 8px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .media-pick-btn:hover { background: #f4f1e8; }
+
+  /* Media panel */
+  .media-grid { padding: 16px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 10px; }
+  .media-card { background: var(--paper-card); border: 1px solid #e6e1d4; border-radius: 12px; overflow: hidden; cursor: pointer; }
+  .media-thumb {
+    height: 70px;
+    background: linear-gradient(120deg, var(--navy), var(--navy-soft));
+    display: flex; align-items: center; justify-content: center;
+    color: var(--gold-soft); font-size: 12px;
+  }
+  .media-body { padding: 10px 13px; }
+  .media-title { font-size: 14px; margin-bottom: 3px; }
+  .tag { display: inline-block; font-size: 10.5px; color: var(--navy); background: #eef1f8; border-radius: 8px; padding: 2px 7px; margin-right: 4px; }
+
+  .player {
+    position: fixed;
+    inset: 0;
+    background: rgba(11,26,51,0.82);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    padding: 20px;
+  }
+  .player.open { display: flex; }
+  .player-box {
+    background: var(--navy-deep);
+    border: 1px solid var(--navy-line);
+    border-radius: 14px;
+    max-width: 400px;
+    width: 100%;
+    padding: 24px 20px;
+    text-align: center;
+    color: #eef1f8;
+  }
+  .player-box .ph {
+    height: 160px;
+    border-radius: 10px;
+    background: repeating-linear-gradient(45deg, #16294d, #16294d 10px, #1c3560 10px, #1c3560 20px);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--gold-soft);
+    font-size: 13px;
+    margin-bottom: 14px;
+  }
+  .player-box button {
+    margin-top: 14px;
+    background: var(--gold);
+    border: none;
+    color: var(--navy-deep);
+    padding: 8px 18px;
+    border-radius: 18px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .db-strip {
+    display: flex;
+    gap: 6px;
+    padding: 8px 16px 4px;
+    overflow-x: auto;
+  }
+  .db-chip {
+    font-size: 10.5px;
+    white-space: nowrap;
+    color: var(--ink-muted);
+    border: 1px solid #e6e1d4;
+    border-radius: 8px;
+    padding: 3px 8px;
+    background: #fff;
+  }
+
+  /* ---------- Avatar photo / name ---------- */
+  .avatar-face-wrap { width: 100%; height: 100%; display: flex; align-items: flex-end; justify-content: center; }
+  #avatar3d { width: 100%; height: 100%; display: block; }
+  .avatar-photo { max-width: 92%; max-height: 100%; width: auto; height: 100%; object-fit: contain; object-position: center bottom; }
+  .avatar-name { font-family: "Noto Serif KR", serif; font-size: 15px; color: #9c7a3e; margin-top: 2px; }
+
+  /* ---------- Settings panel ---------- */
+  .settings-scroll { padding: 16px; overflow-y: auto; flex: 1; }
+  .settings-block { margin-bottom: 22px; }
+  .settings-block .section-label { margin-bottom: 10px; }
+
+  .name-field {
+    width: 100%;
+    border: 1px solid #d9d2bd;
+    border-radius: 10px;
+    padding: 10px 13px;
+    font-size: 14px;
+    font-family: inherit;
+    background: var(--paper-card);
+    outline: none;
+  }
+  .name-field:focus { border-color: var(--gold); }
+  .name-hint { font-size: 11.5px; color: var(--ink-muted); margin-top: 6px; }
+
+  .avatar-group-label {
+    font-size: 11.5px;
+    color: var(--gold);
+    letter-spacing: 0.04em;
+    margin: 4px 0 8px;
+    font-weight: 600;
+  }
+  .avatar-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .avatar-card {
+    background: var(--paper-card);
+    border: 2px solid #e6e1d4;
+    border-radius: 14px;
+    padding: 10px 6px 9px;
+    text-align: center;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(11,26,51,0.06);
+    transition: border-color 0.15s ease, transform 0.15s ease;
+  }
+  .avatar-card:hover { transform: translateY(-1px); }
+  .avatar-card.selected { border-color: var(--gold); background: #fbf6e9; box-shadow: 0 4px 14px rgba(198,161,91,0.25); }
+  .avatar-card .thumb {
+    width: 100%; height: 108px;
+    margin: 0 auto 6px;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--paper);
+    box-shadow: inset 0 0 0 1px rgba(11,26,51,0.06);
+  }
+  .avatar-card .thumb svg, .avatar-card .thumb img { width: 100%; height: 100%; object-fit: contain; object-position: center bottom; }
+  .avatar-card .label { font-size: 11.5px; color: var(--ink); }
+  .avatar-card .label small { display: block; color: var(--ink-muted); font-size: 10px; }
+
+  .upload-zone {
+    border: 1px dashed #c9c0a6;
+    border-radius: 12px;
+    padding: 16px;
+    text-align: center;
+    font-size: 12.5px;
+    color: var(--ink-muted);
+    cursor: pointer;
+    background: #fbf9f3;
+  }
+  .upload-zone input { display: none; }
+
+  .voice-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border: 1px solid #e6e1d4;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    background: var(--paper-card);
+  }
+  .voice-row.selected { border-color: var(--gold); background: #fbf6e9; }
+  .voice-row label { font-size: 13.5px; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .voice-row .preview-btn {
+    font-size: 11.5px;
+    border: 1px solid var(--navy-line);
+    background: none;
+    color: var(--navy);
+    padding: 4px 9px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .save-bar {
+    position: sticky;
+    bottom: 0;
+    background: var(--paper-card);
+    border-top: 1px solid #e6e1d4;
+    padding: 10px 16px;
+  }
+  .save-bar button {
+    width: 100%;
+    background: var(--navy);
+    color: #fff;
+    border: none;
+    padding: 12px;
+    border-radius: 22px;
+    font-size: 14px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  /* ---------- Login / Register screen ---------- */
+  #loginScreen {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: var(--navy-deep);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  #loginScreen.hidden { display: none; }
+  .login-box {
+    width: 100%;
+    max-width: 360px;
+    background: var(--paper-card);
+    border-radius: 16px;
+    padding: 26px 22px 22px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.35);
+  }
+  .login-title { font-family: "Noto Serif KR", serif; font-size: 19px; color: var(--navy); margin-bottom: 2px; }
+  .login-sub { font-size: 12.5px; color: var(--ink-muted); margin-bottom: 18px; }
+  .login-tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+  .login-tab {
+    flex: 1; text-align: center; padding: 9px 0; border-radius: 20px;
+    font-size: 13px; cursor: pointer; background: #efece3; color: var(--ink-muted);
+  }
+  .login-tab.active { background: var(--navy); color: #fff; }
+  .login-field { margin-bottom: 10px; }
+  .login-field input {
+    width: 100%; padding: 11px 13px; border-radius: 10px;
+    border: 1px solid #d8d3c4; font-size: 14px; font-family: inherit; background: #fff;
+  }
+  .login-field input:focus { outline: none; border-color: var(--gold); }
+  .login-field select {
+    width: 100%; padding: 11px 13px; border-radius: 10px;
+    border: 1px solid #d8d3c4; font-size: 14px; font-family: inherit; background: #fff;
+  }
+  .login-submit {
+    width: 100%; background: var(--navy); color: #fff; border: none;
+    padding: 12px; border-radius: 22px; font-size: 14px; cursor: pointer;
+    font-family: inherit; margin-top: 4px;
+  }
+  .login-msg { font-size: 12.5px; color: var(--danger); margin-top: 8px; min-height: 16px; }
+  .login-guest { text-align: center; font-size: 12px; color: var(--ink-muted); margin-top: 14px; cursor: pointer; text-decoration: underline; }
+  .login-server-note { font-size: 11px; color: var(--ink-muted); margin-top: 14px; line-height: 1.5; text-align: center; }
+
+  /* ---------- Schedule category UI ---------- */
+  .sched-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+  .sched-form input, .sched-form select {
+    width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #d8d3c4;
+    font-size: 13.5px; font-family: inherit; background: #fff;
+  }
+  .sched-form button {
+    background: var(--navy); color: #fff; border: none; padding: 10px; border-radius: 20px;
+    font-size: 13.5px; cursor: pointer; font-family: inherit;
+  }
+  .sched-cats { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  .sched-cat-chip {
+    padding: 6px 12px; border-radius: 14px; font-size: 12px; background: #efece3;
+    color: var(--ink-muted); cursor: pointer;
+  }
+  .sched-cat-chip.active { background: var(--gold); color: #fff; }
+  .card .cat-badge {
+    display: inline-block; font-size: 10.5px; color: var(--navy); background: #e8e2ce;
+    border-radius: 8px; padding: 1px 7px; margin-bottom: 4px;
+  }
+  .card .del-btn {
+    background: none; border: none; color: var(--danger); font-size: 11.5px; cursor: pointer;
+    padding: 0; margin-left: 10px; text-decoration: underline;
+  }
+
+  /* ---------- Admin panel ---------- */
+  .admin-sub-title { font-size: 12px; color: var(--ink-muted); margin: -6px 0 12px; line-height: 1.5; }
+  .admin-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    border: 1px solid #e6e1d4; border-radius: 10px; padding: 10px 12px; margin-bottom: 8px;
+    background: var(--paper-card);
+  }
+  .admin-row .who { font-size: 13.5px; color: var(--ink); }
+  .admin-row .who small { display: block; font-size: 11px; color: var(--ink-muted); margin-top: 2px; }
+  .admin-row .role-badge {
+    display: inline-block; font-size: 10px; padding: 1px 7px; border-radius: 8px;
+    background: #e8e2ce; color: var(--navy); margin-left: 6px;
+  }
+  .admin-row .role-badge.pending { background: #fbe8e2; color: var(--danger); }
+  .admin-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .admin-btn {
+    border: none; border-radius: 16px; font-size: 11.5px; padding: 6px 11px; cursor: pointer;
+    font-family: inherit;
+  }
+  .admin-btn.approve { background: var(--navy); color: #fff; }
+  .admin-btn.reject { background: none; border: 1px solid var(--danger); color: var(--danger); }
+  .admin-btn.deactivate { background: none; border: 1px solid var(--navy-line); color: var(--ink-muted); }
+  .admin-empty { font-size: 12.5px; color: var(--ink-muted); padding: 10px 2px 18px; }
+  .admin-item-card {
+    border: 1px solid #e6e1d4; border-radius: 10px; padding: 12px; margin-bottom: 10px;
+    background: var(--paper-card);
+  }
+  .admin-item-card .title { font-size: 13.5px; color: var(--navy); margin-bottom: 4px; }
+  .admin-item-card .body { font-size: 12.5px; color: var(--ink); line-height: 1.5; margin-bottom: 8px; white-space: pre-line; }
+  .admin-item-card .admin-actions { justify-content: flex-end; }
+  .admin-btn.edit { background: none; border: 1px solid var(--navy-line); color: var(--navy); }
+  .admin-btn.delete { background: none; border: 1px solid var(--danger); color: var(--danger); }
+  .admin-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+  .admin-form input, .admin-form textarea, .admin-form select {
+    width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #d8d3c4;
+    font-size: 13.5px; font-family: inherit; background: #fff; resize: vertical;
+  }
+  .admin-row .who .branch-badge {
+    display: inline-block; font-size: 10px; padding: 1px 7px; border-radius: 8px;
+    background: #eef1f8; color: var(--ink-muted); margin-left: 4px;
+  }
+  .admin-form button {
+    background: var(--navy); color: #fff; border: none; padding: 10px; border-radius: 20px;
+    font-size: 13.5px; cursor: pointer; font-family: inherit;
+  }
+  .admin-msg { font-size: 12px; color: var(--ink-muted); min-height: 14px; margin: -4px 0 10px; }
+</style>
+</head>
+<body>
+
+<!-- LOGIN / REGISTER SCREEN -->
+<div id="loginScreen">
+  <div class="login-box">
+    <div class="login-title">리더스 AI 비서</div>
+    <div class="login-sub">설계사 개인 계정으로 로그인하면 내 일정·데이터가 안전하게 보관됩니다.</div>
+    <div class="login-tabs">
+      <div class="login-tab active" id="tabLogin">로그인</div>
+      <div class="login-tab" id="tabRegister">회원가입</div>
+    </div>
+
+    <div id="loginFormWrap">
+      <div class="login-field"><input type="text" id="loginId" placeholder="아이디 (휴대폰번호 또는 이메일)"></div>
+      <div class="login-field"><input type="password" id="loginPw" placeholder="비밀번호"></div>
+      <button class="login-submit" id="loginSubmitBtn">로그인</button>
+    </div>
+
+    <div id="registerFormWrap" style="display:none;">
+      <div class="login-field"><input type="text" id="regName" placeholder="이름"></div>
+      <div class="login-field"><input type="text" id="regId" placeholder="아이디 (휴대폰번호 또는 이메일)"></div>
+      <div class="login-field"><input type="password" id="regPw" placeholder="비밀번호 (6자 이상)"></div>
+      <div class="login-field">
+        <select id="regBranch">
+          <option value="">소속 지사 선택</option>
+        </select>
+      </div>
+      <div class="login-field"><input type="text" id="regAdminCode" placeholder="관리자 코드 (일반 설계사는 비워두세요)"></div>
+      <div class="name-hint" style="margin-bottom:10px;">일반 설계사는 소속 지사를 선택해 가입하면, 그 지사의 지사장(또는 상무) 승인이 있어야 로그인할 수 있습니다.</div>
+      <button class="login-submit" id="registerSubmitBtn">회원가입</button>
+    </div>
+
+    <div class="login-msg" id="loginMsg"></div>
+    <div class="login-guest" id="guestLoginBtn">지금은 그냥 둘러보기 (일정은 저장되지 않음)</div>
+    <div class="login-server-note" id="loginServerNote"></div>
+  </div>
+</div>
+
+<div class="app-frame">
+
+  <div class="stage">
+    <div class="stage-top">
+      <div class="brand">리더스 AI 비서<small>설계 동행 프로토타입 · 음성/텍스트 지원</small></div>
+      <div class="clock" id="clock"></div>
+    </div>
+    <div class="avatar-wrap">
+      <div class="avatar-orb" id="avatarOrb">
+        <div class="avatar-face-wrap" id="avatarFaceSlot">
+          <canvas id="avatar3d" width="300" height="300"></canvas>
+        </div>
+      </div>
+      <div class="avatar-name" id="avatarName">담당 비서</div>
+      <div class="avatar-status" id="avatarStatus"><span class="dot"></span>무엇을 도와드릴까요?</div>
+      <div class="wave-wrap" id="waveWrap"></div>
+    </div>
+  </div>
+
+  <div class="tabbar">
+    <button class="tabbtn active" data-tab="chat">AI 상담</button>
+    <button class="tabbtn" data-tab="schedule">일정</button>
+    <button class="tabbtn" data-tab="media">미디어</button>
+    <button class="tabbtn" data-tab="settings">비서 설정</button>
+    <button class="tabbtn" data-tab="admin" id="adminTabBtn" style="display:none;">관리자</button>
+  </div>
+
+  <!-- CHAT PANEL -->
+  <div class="panel active" id="panel-chat">
+    <div class="db-strip">
+      <span class="db-chip">📗 약관 DB</span>
+      <span class="db-chip">📄 보상사례 DB</span>
+      <span class="db-chip">🩺 의학정보 소스</span>
+      <span class="db-chip">🗂 일정 DB</span>
+      <span class="db-chip">🎞 미디어 DB</span>
+    </div>
+    <div class="chat-scroll" id="chatScroll"></div>
+    <div class="attach-preview" id="attachPreview">
+      <img id="attachPreviewImg" alt="">
+      <div class="name" id="attachPreviewName"></div>
+      <button class="remove" id="attachRemoveBtn">삭제</button>
+    </div>
+    <div class="composer">
+      <input type="file" id="attachInput" accept="image/*" style="display:none;">
+      <button class="icon-btn attach-btn" id="attachBtn" title="사진/서류 첨부">📎</button>
+      <input type="text" id="textInput" placeholder="메시지를 입력하거나 마이크를 누르세요">
+      <button class="icon-btn mic-btn" id="micBtn" title="눌러서 대화 시작 (답변 끝나면 자동으로 다시 들어요. 종료하려면 다시 누르거나 '대화 종료'라고 말하세요)">🎤</button>
+      <button class="icon-btn send-btn" id="sendBtn" title="전송">➤</button>
+    </div>
+  </div>
+
+  <!-- SCHEDULE PANEL -->
+  <div class="panel" id="panel-schedule">
+    <div class="list-wrap">
+      <div class="section-label">새 일정 등록</div>
+      <div class="sched-form">
+        <input type="text" id="schedTitleInput" placeholder="일정 제목 (예: 김철수 고객 미팅)">
+        <input type="text" id="schedTimeInput" placeholder="시간 (예: 내일 14:00)">
+        <select id="schedCategoryInput">
+          <option value="미팅">미팅</option>
+          <option value="계약">계약</option>
+          <option value="방문">방문</option>
+          <option value="개인">개인</option>
+          <option value="기타">기타</option>
+        </select>
+        <button id="schedAddBtn">일정 추가</button>
+      </div>
+
+      <div class="section-label">등록된 일정 (일정 DB · 카테고리별)</div>
+      <div class="sched-cats" id="schedCatFilter"></div>
+      <div id="scheduleList"></div>
+      <div class="empty-note" id="scheduleEmpty">아직 등록된 일정이 없습니다. AI 상담 탭에서 "내일 2시 미팅 등록해줘"처럼 말하거나, 위에서 직접 추가해보세요.</div>
+    </div>
+  </div>
+
+  <!-- MEDIA PANEL -->
+  <div class="panel" id="panel-media">
+    <div class="media-grid" id="mediaGrid"></div>
+  </div>
+
+  <!-- SETTINGS PANEL -->
+  <div class="panel" id="panel-settings">
+    <div class="settings-scroll">
+
+      <div class="settings-block">
+        <div class="section-label">비서 이름</div>
+        <input type="text" class="name-field" id="nameField" placeholder="예: 지혜, 든든이, 미스터 K">
+        <div class="name-hint">설계사님이 직접 부를 이름을 정해주세요. 대화 화면에 표시됩니다.</div>
+      </div>
+
+      <div class="settings-block">
+        <div class="section-label">아바타 선택</div>
+        <div class="avatar-grid" id="avatarGrid"></div>
+      </div>
+
+      <div class="settings-block">
+        <div class="section-label">나만의 캐릭터 올리기</div>
+        <label class="upload-zone" for="avatarUpload">
+          이미지를 선택해 직접 등록하세요 (얼굴이 잘 보이는 정사각형 사진 권장)
+          <input type="file" id="avatarUpload" accept="image/*">
+        </label>
+      </div>
+
+      <div class="settings-block">
+        <div class="section-label">목소리 선택</div>
+        <div id="voiceList"></div>
+        <div class="name-hint" id="voiceHint"></div>
+      </div>
+
+      <div class="settings-block">
+        <div class="section-label">계정</div>
+        <div class="name-hint" id="accountInfo"></div>
+        <button class="remind-btn" id="logoutBtn" style="margin-top:8px;">로그아웃</button>
+      </div>
+
+      <div class="settings-block" id="accountChangeBlock">
+        <div class="section-label">아이디/비밀번호 변경</div>
+        <div class="name-hint">처음 받은 아이디·비밀번호를 본인이 원하는 값으로 바꾸실 수 있습니다.</div>
+        <div class="login-field">
+          <input type="text" id="accChangeNewId" placeholder="새 아이디 (바꾸지 않으려면 비워두세요)">
+        </div>
+        <div class="login-field">
+          <input type="password" id="accChangeNewPw" placeholder="새 비밀번호 (바꾸지 않으려면 비워두세요, 6자 이상)">
+        </div>
+        <div class="login-field">
+          <input type="password" id="accChangeCurrentPw" placeholder="현재 비밀번호 (본인 확인용, 필수)">
+        </div>
+        <button class="remind-btn" id="accountChangeBtn" style="margin-top:8px;">아이디/비밀번호 변경하기</button>
+        <div class="name-hint" id="accountChangeMsg"></div>
+      </div>
+
+    </div>
+    <div class="save-bar">
+      <button id="saveSettingsBtn">저장하고 적용하기</button>
+    </div>
+  </div>
+
+  <!-- ADMIN PANEL (관리자 전용) -->
+  <div class="panel" id="panel-admin">
+    <div class="settings-scroll">
+
+      <div class="settings-block" id="branchManageBlock" style="display:none;">
+        <div class="section-label">지사 관리</div>
+        <div class="admin-sub-title">상무님만 볼 수 있습니다. 지사를 먼저 만들어야 설계사들이 가입할 때 소속을 선택할 수 있습니다.</div>
+        <div class="admin-form" id="branchForm">
+          <input type="text" id="branchNameInput" placeholder="지사명 (예: 부산지사)">
+          <button type="button" id="branchAddBtn">지사 추가</button>
+        </div>
+        <div class="admin-msg" id="branchMsg"></div>
+        <div id="branchList"></div>
+        <div class="admin-empty" id="branchEmpty" style="display:none;">등록된 지사가 없습니다.</div>
+      </div>
+
+      <div class="settings-block" id="branchAdminCreateBlock" style="display:none;">
+        <div class="section-label">지사장 계정 생성</div>
+        <div class="admin-sub-title">상무님만 볼 수 있습니다. 지사장 계정은 만들어지는 즉시 승인 상태로 로그인할 수 있습니다.</div>
+        <div class="admin-form" id="branchAdminForm">
+          <input type="text" id="baName" placeholder="지사장 이름">
+          <input type="text" id="baLoginId" placeholder="아이디 (휴대폰번호 또는 이메일)">
+          <input type="password" id="baPassword" placeholder="비밀번호 (6자 이상)">
+          <select id="baBranchSelect">
+            <option value="">소속 지사 선택</option>
+          </select>
+          <button type="button" id="branchAdminAddBtn">지사장 계정 만들기</button>
+        </div>
+        <div class="admin-msg" id="branchAdminMsg"></div>
+      </div>
+
+      <div class="settings-block">
+        <div class="section-label">가입 승인 관리</div>
+        <div class="admin-sub-title" id="adminScopeNote">새로 가입한 설계사는 승인하기 전까지 로그인할 수 없습니다. 승인/거절 처리해주세요.</div>
+        <div id="adminUserList"></div>
+        <div class="admin-empty" id="adminUserEmpty" style="display:none;">승인 대기 중인 설계사가 없습니다.</div>
+      </div>
+
+      <div class="settings-block" id="knowledgeBlock" style="display:none;">
+        <div class="section-label">학습 지식창고</div>
+        <div class="admin-sub-title">블로그·영상·자료를 AI가 읽고 핵심 원칙, 절차, 판례, 주의점으로 정리해서 학습합니다. 원문은 저장하지 않고 정리된 내용과 출처만 보관합니다. 학습한 내용은 설계사들의 질문에 자동으로 활용됩니다. (상무님만 볼 수 있습니다)</div>
+
+        <div class="admin-sub-title" style="font-weight:700;color:var(--navy);">① 네이버 블로그 학습</div>
+        <div class="admin-form">
+          <input type="text" id="kBlog" placeholder="블로그 주소 또는 아이디 (예: pth9420)">
+          <input type="text" id="kBlogName" placeholder="자료 이름 (예: 박태현 자금성 블로그)">
+          <input type="number" id="kBlogMax" value="100" min="1" max="2000" placeholder="학습할 글 수 (최신 글부터)">
+          <button type="button" id="kBlogTestBtn">먼저 1건 시험해보기 (저장 안 함)</button>
+          <button type="button" id="kBlogStartBtn">학습 시작</button>
+        </div>
+
+        <div class="admin-sub-title" style="font-weight:700;color:var(--navy);">② 유튜브 영상 학습</div>
+        <div class="admin-sub-title">영상 주소를 넣으면 자막을 자동으로 가져와 학습합니다. 자동으로 안 되면 영상 아래 "더보기 → 스크립트 표시"의 글을 복사해 아래 칸에 붙여넣으세요.</div>
+        <div class="admin-form">
+          <input type="text" id="kYtUrl" placeholder="유튜브 영상 주소">
+          <input type="text" id="kYtName" placeholder="자료 이름 (예: 정닥터)" value="정닥터">
+          <input type="text" id="kYtTitle" placeholder="영상 제목 (붙여넣기를 쓸 때만)">
+          <textarea id="kYtText" rows="3" placeholder="(선택) 영상 스크립트 붙여넣기"></textarea>
+          <button type="button" id="kYtBtn">영상 학습</button>
+        </div>
+
+        <div class="admin-sub-title" style="font-weight:700;color:var(--navy);">③ 첨부 파일(PDF) 학습</div>
+        <div class="admin-sub-title">표가 많은 자료(보험료 비교 가이드북 등)는 "이미지로 읽기"를 권장합니다. 36쪽 기준 약 5~10분 걸립니다.</div>
+        <div class="admin-form">
+          <input type="text" id="kPdfName" placeholder="자료 이름 (예: 엠금융 26.10 생명보험 가이드북)">
+          <select id="kPdfMode">
+            <option value="vision">표·숫자 자료 — 이미지로 읽기 (정확, 권장)</option>
+            <option value="data">표·숫자 자료 — 글자만 읽기 (빠름, 표가 어긋날 수 있음)</option>
+            <option value="notes">글 위주 자료 — 읽고 정리하기</option>
+          </select>
+          <textarea id="kPdfNotice" rows="2" placeholder="(선택) 사용 제한 문구. 비워두면 '사내 교육용' 자료는 자동 감지합니다."></textarea>
+          <input type="file" id="kPdfFile" accept=".pdf,application/pdf">
+          <button type="button" id="kPdfBtn">파일 학습</button>
+        </div>
+
+        <div class="admin-sub-title" style="font-weight:700;color:var(--navy);">④ 글 붙여넣기 학습</div>
+        <div class="admin-form">
+          <input type="text" id="kTxName" placeholder="자료 이름">
+          <input type="text" id="kTxTitle" placeholder="제목">
+          <input type="text" id="kTxUrl" placeholder="(선택) 출처 주소">
+          <textarea id="kTxText" rows="4" placeholder="글 내용을 붙여넣으세요 (100자 이상)"></textarea>
+          <button type="button" id="kTxBtn">글 학습</button>
+        </div>
+
+        <div class="admin-sub-title" style="font-weight:700;color:var(--navy);">⑥ 보험 약관 올리기 (여러 파일 한 번에)</div>
+        <div class="admin-sub-title">약관 PDF를 한꺼번에 선택해서 올립니다. 글자를 그대로 쪽별로 보관하므로 비용이 거의 들지 않고, AI가 요약하지 않습니다. 파일 이름이 상품 이름으로 쓰이니 "보험사_상품명_약관.pdf"처럼 지어 주세요. 이미 올린 파일은 건너뜁니다. (글자가 선택되는 PDF, 파일당 40MB 이하)</div>
+        <div class="admin-form">
+          <select id="kTermsCat">
+            <option>종신보험</option><option>정기보험</option><option>건강·질병보험</option><option>암보험</option>
+            <option>어린이보험</option><option>간병·치매보험</option><option>일반연금</option><option>변액연금</option>
+            <option>변액보험</option><option>저축보험</option><option>실손의료보험</option><option>손해보험</option><option>기타</option>
+          </select>
+          <input type="file" id="kTermsFiles" accept=".pdf,application/pdf" multiple>
+          <button type="button" id="kTermsBtn">약관 올리기</button>
+        </div>
+
+        <div class="admin-sub-title" style="font-weight:700;color:var(--navy);margin-top:6px;">⑤ 약관 공시실 접속 시험</div>
+        <div class="admin-sub-title">AI비서 서버가 보험사·협회 공시 사이트를 열 수 있는지 시험합니다. 한 줄에 주소 하나씩 입력하세요. (저장하지 않습니다)</div>
+        <div class="admin-form">
+          <textarea id="kProbeUrls" rows="6">https://pub.insure.or.kr
+https://kpub.knia.or.kr
+https://www.hanwhalife.com
+https://www.samsunglife.com
+https://www.kyobo.com
+https://www.idbins.com</textarea>
+          <button type="button" id="kProbeBtn">접속 시험</button>
+          <button type="button" id="kLinksBtn" style="margin-top:8px;">첫 줄 주소의 링크 목록 보기</button>
+          <button type="button" id="kDiagBtn" style="margin-top:8px;">보험사 33곳 한 번에 진단</button>
+          <button type="button" id="kDiag2Btn" style="margin-top:8px;">정밀 진단 (열리는 곳만 · 상세)</button>
+        </div>
+
+        <div class="admin-msg" id="kMsg"></div>
+        <div style="display:none;margin:-4px 0 10px;" id="kCancelWrap"><button type="button" id="kCancelBtn" class="admin-btn delete">학습 중지</button></div>
+        <pre id="kOut" style="display:none;white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.5;background:#f4f1ea;border-radius:10px;padding:10px;margin:0 0 12px;max-height:260px;overflow:auto;"></pre>
+
+        <div class="admin-sub-title" style="font-weight:700;color:var(--navy);">학습 현황</div>
+        <div id="kList"></div>
+        <div class="admin-empty" id="kEmpty" style="display:none;">아직 학습한 자료가 없습니다.</div>
+
+        <div class="admin-sub-title" style="font-weight:700;color:var(--navy);margin-top:10px;">검색 시험 (학습 내용이 질문에 맞게 찾아지는지 확인)</div>
+        <div class="admin-form">
+          <input type="text" id="kSearchQ" placeholder="예: 40세 남자 정기보험 보험료 비교">
+          <button type="button" id="kSearchBtn">검색해보기</button>
+        </div>
+      </div>
+
+      <div class="settings-block" id="productDocBlock" style="display:none;">
+        <div class="section-label">월별 보험사 상품자료</div>
+        <div class="admin-sub-title">상무님만 볼 수 있습니다. 이달의 보험사 주요 상품 자료(PDF 또는 글)를 올려두면, AI가 읽고 "이번 달 경쟁력 있는 상품 알려줘" 같은 질문에 비교·분석해서 답합니다. 글자가 선택되는 PDF만 읽을 수 있고, 사진/스캔 PDF는 내용을 복사해 붙여넣어 주세요.</div>
+        <div class="admin-form" id="productForm">
+          <input type="month" id="prodMonth">
+          <input type="text" id="prodCompany" placeholder="보험사명 (예: 삼성생명)">
+          <input type="text" id="prodTitle" placeholder="자료 제목 (예: 10월 주력상품 안내)">
+          <textarea id="prodContent" placeholder="내용을 붙여넣거나, 아래에서 PDF/텍스트 파일을 선택하세요" rows="4"></textarea>
+          <input type="file" id="prodFile" accept=".pdf,.txt,.md,.csv,application/pdf,text/plain">
+          <button type="button" id="prodAddTextBtn">붙여넣은 내용으로 등록</button>
+          <button type="button" id="prodAddFileBtn">선택한 파일로 등록</button>
+        </div>
+        <div class="admin-msg" id="prodMsg"></div>
+        <div id="prodList"></div>
+        <div class="admin-empty" id="prodEmpty" style="display:none;">등록된 상품자료가 없습니다.</div>
+      </div>
+
+      <div class="settings-block">
+        <div class="section-label">약관 · 특약 관리</div>
+        <div class="admin-sub-title">여기서 등록·수정·삭제하면 모든 설계사의 AI 상담 화면에 바로 반영됩니다.</div>
+        <div class="admin-form" id="termForm">
+          <input type="text" id="termCompany" placeholder="보험사명 (예: 한빛생명)">
+          <input type="text" id="termProduct" placeholder="상품명 (예: 무배당 건강보험)">
+          <input type="text" id="termRider" placeholder="특약명 (예: 암진단특약)">
+          <textarea id="termCoverage" placeholder="보장 내용" rows="2"></textarea>
+          <textarea id="termExclusions" placeholder="유의사항/제외 항목 (줄바꿈으로 구분)" rows="3"></textarea>
+          <button type="button" id="termAddBtn">약관 추가</button>
+        </div>
+        <div class="admin-msg" id="termMsg"></div>
+        <div id="termList"></div>
+        <div class="admin-empty" id="termEmpty" style="display:none;">등록된 약관이 없습니다.</div>
+      </div>
+
+      <div class="settings-block">
+        <div class="section-label">보상사례 관리</div>
+        <div class="admin-sub-title">고객 상담 중 참고할 보상사례를 등록하면 모든 설계사가 실시간으로 받아봅니다.</div>
+        <div class="admin-form" id="claimForm">
+          <input type="text" id="claimTitle" placeholder="사례 제목 (예: 실손 1세대 · 무릎 관절경 수술)">
+          <textarea id="claimSummary" placeholder="사례 요약" rows="2"></textarea>
+          <input type="text" id="claimRange" placeholder="지급 범위 (예: 실제 진료비의 약 80~95%)">
+          <textarea id="claimNote" placeholder="유의사항 (선택)" rows="2"></textarea>
+          <button type="button" id="claimAddBtn">보상사례 추가</button>
+        </div>
+        <div class="admin-msg" id="claimMsg"></div>
+        <div id="claimList"></div>
+        <div class="admin-empty" id="claimEmpty" style="display:none;">등록된 보상사례가 없습니다.</div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<div class="player" id="player">
+  <div class="player-box">
+    <div class="ph" id="playerThumb">▶ 재생 준비 중…</div>
+    <div id="playerTitle" style="font-size:14px;"></div>
+    <div style="font-size:12px;color:#97a4c2;margin-top:4px;">실제 서비스에서는 업로드된 영상 파일이 여기서 재생됩니다</div>
+    <button onclick="closePlayer()">닫기</button>
+  </div>
+</div>
+
+<script async src="https://cdnjs.cloudflare.com/ajax/libs/three.js/128/three.min.js" onload="try{if(typeof applyAvatarToHeader==='function')applyAvatarToHeader();}catch(e){}"></script>
+<script>
+/* ============================================================
+   MOCK 다중 DB 구조 — 실제 구현 시 각각 별도 DB/서비스로 분리
+   - TERMS_DB   : 약관/상품 구조 → 벡터 DB (약관 조항 임베딩)
+   - CLAIMS_DB  : 보상사례/청구 데이터 → 별도 문서형 DB
+   - SCHEDULE_DB: 설계사 개인 일정 → 관계형 DB (사용자별 격리)
+   - MEDIA_DB   : 영상/자료 라이브러리 → 오브젝트 스토리지 + 메타DB
+   ※ 회사명·수치는 데모용 가상 데이터입니다. 실제 약관 원문이 아닙니다.
+============================================================ */
+
+// DEMO_* : 관리자 DB 서버가 아직 연결되지 않았을 때(둘러보기 모드)만 쓰는 예시 데이터.
+// 로그인해서 서버(API_BASE)에 연결되면 loadContentFromServer()가 관리자가 등록한
+// 최신 약관/보상사례로 TERMS_DB / CLAIMS_DB를 실시간으로 덮어씁니다.
+const DEMO_TERMS_DB = [
+  {
+    company: "한빛생명", product: "무배당 건강보험", rider: "암진단특약",
+    coverage: "최초 1회 암 진단 확정 시 가입금액 지급 (유사암은 20% 지급)",
+    exclusions: [
+      "계약일로부터 90일 이내 진단 확정된 암",
+      "제자리암, 경계성종양 등 유사암은 별도 한도 적용",
+      "피보험자의 고의 또는 자해로 인한 사고는 보장하지 않음"
+    ]
+  },
+  {
+    company: "동해화재", product: "실손의료비보험(2세대)", rider: "질병입원특약",
+    coverage: "입원 실제 치료비 중 급여 90%, 비급여 80% (연간 한도 내)",
+    exclusions: [
+      "치아 관련 치료(임플란트 등 일부 제외 항목)",
+      "미용 목적 성형수술",
+      "건강검진, 예방접종 등 질병 치료 목적이 아닌 비용"
+    ]
+  },
+  {
+    company: "서라벌손해보험", product: "간병비보장보험", rider: "장기요양간병특약",
+    coverage: "장기요양등급 1~2등급 판정 시 매월 간병비 정액 지급",
+    exclusions: [
+      "가입 전 이미 장기요양등급을 받은 경우",
+      "경증(3~5등급) 판정은 특약 대상에서 제외",
+      "해외 요양시설 이용 비용"
+    ]
+  }
+];
+
+const DEMO_CLAIMS_DB = [
+  {
+    keyword: ["실손", "1세대", "무릎", "관절경"],
+    caseTitle: "실손 1세대 · 무릎 관절경 수술",
+    summary: "입원치료비 급여 90~100%, 비급여 본인부담 약 20% 공제 후 지급된 사례가 많습니다. 1세대는 자기부담금 비율이 낮아 2~4세대보다 실수령액이 큰 편입니다.",
+    range: "실제 진료비의 약 80~95% 수준 (병원·특진료 여부에 따라 변동)",
+    note: "정확한 금액은 진료비 세부내역서의 급여/비급여 구분에 따라 달라지며, 심사 결과 최종 확정됩니다."
+  },
+  {
+    keyword: ["암", "진단비", "위암"],
+    caseTitle: "암 진단비 청구 사례",
+    summary: "조직검사로 위암 확진 시 가입 특약의 진단비 전액이 통상 지급되며, 병기(stage)와 무관하게 '암 진단 확정' 자체가 지급 사유입니다.",
+    range: "가입금액 100% (유사암·경계성 종양이 아닌 경우)",
+    note: "90일 면책기간, 재진단 여부 등 약관상 조건 충족 여부를 먼저 확인해야 합니다."
+  }
+];
+
+// 실제 사용 중인 값 — 로그인 시 서버 데이터로 교체될 수 있어 let로 선언합니다.
+let TERMS_DB = DEMO_TERMS_DB;
+let CLAIMS_DB = DEMO_CLAIMS_DB;
+
+const MEDIA_DB = [
+  { title: "간병비보장보험 홈쇼핑 소개영상", tags: ["간병비", "홈쇼핑", "서라벌손해보험"], length: "12:40" },
+  { title: "암보험 특약 비교 설명영상", tags: ["암보험", "특약비교", "교육"], length: "08:15" },
+  { title: "실손보험 세대별 차이 안내", tags: ["실손", "1세대", "2세대", "교육"], length: "06:02" }
+];
+
+let SCHEDULE_DB = [
+  { time: "내일 14:00", title: "김철수 고객 미팅", meta: "지점: 해운대점", category: "미팅" }
+];
+
+/* ============================================================
+   아바타 프리셋 (고급 일러스트 인물, 가상 캐릭터 — 실제 인물 아님)
+============================================================ */
+function robotSVG(cfg) {
+  const p = cfg.id;
+  const defs = `
+    <defs>
+      <linearGradient id="${p}-head" x1="15%" y1="0%" x2="85%" y2="100%">
+        <stop offset="0%" stop-color="${cfg.headHi}"/>
+        <stop offset="100%" stop-color="${cfg.headLo}"/>
+      </linearGradient>
+      <linearGradient id="${p}-body" x1="15%" y1="0%" x2="85%" y2="100%">
+        <stop offset="0%" stop-color="${cfg.bodyHi}"/>
+        <stop offset="100%" stop-color="${cfg.bodyLo}"/>
+      </linearGradient>
+      <radialGradient id="${p}-core" cx="38%" cy="32%" r="75%">
+        <stop offset="0%" stop-color="#fff6df"/>
+        <stop offset="50%" stop-color="${cfg.accent}"/>
+        <stop offset="100%" stop-color="${cfg.accentDeep}"/>
+      </radialGradient>
+      <radialGradient id="${p}-shine" cx="32%" cy="28%" r="60%">
+        <stop offset="0%" stop-color="#ffffff" stop-opacity="0.55"/>
+        <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+      </radialGradient>
+    </defs>`;
+
+  // 귀여운 동그란 눈 (하이라이트 포함)
+  const cuteEyes = (cx, cy, spread, r) => `
+    <circle cx="${cx-spread}" cy="${cy}" r="${r}" fill="#12141c"/>
+    <circle cx="${cx+spread}" cy="${cy}" r="${r}" fill="#12141c"/>
+    <circle cx="${cx-spread+r*0.35}" cy="${cy-r*0.35}" r="${r*0.34}" fill="#ffffff"/>
+    <circle cx="${cx+spread+r*0.35}" cy="${cy-r*0.35}" r="${r*0.34}" fill="#ffffff"/>
+    ${cfg.eyeGlow ? `<circle cx="${cx-spread}" cy="${cy}" r="${r*1.7}" fill="${cfg.accent}" opacity="0.16"/><circle cx="${cx+spread}" cy="${cy}" r="${r*1.7}" fill="${cfg.accent}" opacity="0.16"/>` : ''}
+  `;
+
+  return `
+  <svg viewBox="0 0 200 380" width="200" height="380" xmlns="http://www.w3.org/2000/svg">
+    ${defs}
+    <ellipse cx="100" cy="360" rx="52" ry="9" fill="#000000" opacity="0.13"/>
+
+    <!-- 다리(짧고 통통) -->
+    <rect x="70" y="308" width="24" height="34" rx="12" fill="url(#${p}-body)"/>
+    <rect x="106" y="308" width="24" height="34" rx="12" fill="url(#${p}-body)"/>
+    <ellipse cx="82" cy="346" rx="17" ry="11" fill="${cfg.accent}"/>
+    <ellipse cx="118" cy="346" rx="17" ry="11" fill="${cfg.accent}"/>
+
+    <!-- 팔(짧고 동그란 뭉치) -->
+    <circle cx="38" cy="238" r="19" fill="url(#${p}-body)"/>
+    <circle cx="162" cy="238" r="19" fill="url(#${p}-body)"/>
+    <circle cx="35" cy="234" r="7" fill="url(#${p}-shine)"/>
+    <circle cx="159" cy="234" r="7" fill="url(#${p}-shine)"/>
+
+    <!-- 몸통(둥글둥글) -->
+    <ellipse cx="100" cy="252" rx="62" ry="58" fill="url(#${p}-body)"/>
+    <ellipse cx="100" cy="252" rx="62" ry="58" fill="none" stroke="${cfg.accent}" stroke-width="2" opacity="0.45"/>
+    <circle cx="100" cy="256" r="15" fill="#10131c"/>
+    <circle cx="100" cy="256" r="11.5" fill="url(#${p}-core)"/>
+    <ellipse cx="76" cy="220" rx="22" ry="14" fill="url(#${p}-shine)"/>
+
+    ${cfg.antenna ? `<line x1="100" y1="66" x2="100" y2="44" stroke="${cfg.accent}" stroke-width="5" stroke-linecap="round"/><circle cx="100" cy="38" r="8" fill="url(#${p}-core)"/>` : ''}
+
+    <!-- 머리(크고 동글동글, 귀여운 비율) -->
+    <circle cx="100" cy="150" r="86" fill="url(#${p}-head)"/>
+    <circle cx="100" cy="150" r="86" fill="none" stroke="${cfg.accent}" stroke-width="2" opacity="0.4"/>
+    <ellipse cx="66" cy="112" rx="30" ry="20" fill="url(#${p}-shine)"/>
+
+    ${cuteEyes(100, 156, 26, 12)}
+
+    ${cfg.smile ? `<path d="M82 190 Q100 204 118 190" stroke="#12141c" stroke-width="4" fill="none" stroke-linecap="round"/>` : `<rect x="86" y="188" width="28" height="5" rx="2.5" fill="#12141c"/>`}
+
+    ${cfg.cheeks ? `<ellipse cx="46" cy="168" rx="11" ry="7" fill="${cfg.accent}" opacity="0.4"/><ellipse cx="154" cy="168" rx="11" ry="7" fill="${cfg.accent}" opacity="0.4"/>` : ''}
+
+    ${cfg.earDots ? `<circle cx="18" cy="150" r="9" fill="${cfg.accent}"/><circle cx="182" cy="150" r="9" fill="${cfg.accent}"/>` : ''}
+  </svg>`;
+}
+
+const ROBOT_CONFIGS = [
+  {
+    id: "coco", name: "코코", tagline: "동글동글 네이비",
+    headHi: "#2f4d80", headLo: "#12274a", bodyHi: "#274670", bodyLo: "#0f2148",
+    accent: "#c6a15b", accentDeep: "#8a6a34",
+    antenna: true, smile: true, cheeks: true, earDots: false, eyeGlow: false
+  },
+  {
+    id: "mochi", name: "모찌", tagline: "펄 화이트",
+    headHi: "#faf8f3", headLo: "#e2ddc9", bodyHi: "#f2ede0", bodyLo: "#d8d2bc",
+    accent: "#c6a15b", accentDeep: "#8a6a34",
+    antenna: true, smile: true, cheeks: true, earDots: false, eyeGlow: false
+  },
+  {
+    id: "pico", name: "피코", tagline: "소프트 그레이",
+    headHi: "#6b707c", headLo: "#3c3f47", bodyHi: "#5c6069", bodyLo: "#2e3138",
+    accent: "#c6a15b", accentDeep: "#8a6a34",
+    antenna: false, smile: true, cheeks: false, earDots: true, eyeGlow: false
+  },
+  {
+    id: "goldie", name: "골디", tagline: "골드 스페셜",
+    headHi: "#e7c988", headLo: "#b8903f", bodyHi: "#dcbb79", bodyLo: "#a9803f",
+    accent: "#12274a", accentDeep: "#0b1a33",
+    antenna: true, smile: true, cheeks: true, earDots: false, eyeGlow: true
+  },
+  {
+    id: "sky", name: "스카이", tagline: "소프트 블루",
+    headHi: "#6f8fc4", headLo: "#3a5a92", bodyHi: "#5c7fb8", bodyLo: "#2f4d80",
+    accent: "#f3dca0", accentDeep: "#c6a15b",
+    antenna: true, smile: true, cheeks: true, earDots: false, eyeGlow: true
+  },
+  {
+    id: "ink", name: "잉크", tagline: "미니멀 블랙",
+    headHi: "#3a3d46", headLo: "#16171c", bodyHi: "#2e3138", bodyLo: "#101114",
+    accent: "#c6a15b", accentDeep: "#8a6a34",
+    antenna: false, smile: true, cheeks: false, earDots: true, eyeGlow: false
+  }
+];
+
+const AVATAR_PRESETS = ROBOT_CONFIGS.map(cfg => {
+  const svg = robotSVG(cfg);
+  const img = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+  return { id: cfg.id, name: cfg.name, gender: 'robot', tagline: cfg.tagline, svg, img };
+});
+
+let selectedAvatarId = AVATAR_PRESETS[0].id;
+let customAvatarSrc = null;   // 업로드한 이미지가 있으면 dataURL 저장
+let selectedVoiceURI = null;  // 브라우저 자체 음성(서버 TTS 실패 시 대체용으로만 사용)
+let selectedOpenAIVoice = 'nova'; // 실제 답변 음성(서버 TTS)에 쓰이는 목소리
+try {
+  const savedVoice = localStorage.getItem('ttsVoice');
+  if (savedVoice) selectedOpenAIVoice = savedVoice;
+} catch (e) { /* 저장 공간을 못 쓰는 환경이면 기본값(nova) 사용 */ }
+let currentSpeechAudio = null;
+let ASSISTANT_NAME = AVATAR_PRESETS[0].name;
+let AVATAR_MODE = null;       // setStatus()가 갱신 — 3D 애니메이션이 참조
+
+/* ============================================================
+   탭 전환
+============================================================ */
+document.querySelectorAll('.tabbtn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tabbtn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'schedule') renderSchedule();
+    if (btn.dataset.tab === 'media') renderMedia();
+    if (btn.dataset.tab === 'settings') renderSettings();
+    if (btn.dataset.tab === 'admin') renderAdminPanel();
+  });
+});
+
+/* 시계 */
+function tickClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+}
+tickClock(); setInterval(tickClock, 30000);
+
+/* ============================================================
+   채팅 로직
+============================================================ */
+const chatScroll = document.getElementById('chatScroll');
+const orb = document.getElementById('avatarOrb');
+const statusEl = document.getElementById('avatarStatus');
+
+function setStatus(mode, text) {
+  orb.className = 'avatar-orb' + (mode ? ' ' + mode : '');
+  statusEl.innerHTML = '<span class="dot"></span>' + text;
+  AVATAR_MODE = mode;
+}
+
+/* ============================================================
+   음성 파형(주파수) 시각화
+   - 듣는 중(마이크 입력): 실제 마이크 오디오를 분석해 주파수 막대를 그림
+   - 말하는 중(TTS 출력): 브라우저가 합성 음성의 오디오 스트림을 직접
+     내주지 않기 때문에, 말하는 리듬에 맞춘 파형 애니메이션으로 표현
+============================================================ */
+const WAVE_BAR_COUNT = 28;
+const waveWrap = document.getElementById('waveWrap');
+const waveBars = [];
+for (let i = 0; i < WAVE_BAR_COUNT; i++) {
+  const bar = document.createElement('div');
+  bar.className = 'wave-bar';
+  waveWrap.appendChild(bar);
+  waveBars.push(bar);
+}
+
+let waveAnimHandle = null;
+let waveAudioCtx = null;
+let waveAnalyser = null;
+let waveMicStream = null;
+let waveMicSourceIsOwn = false; // true면 시각화 전용으로 우리가 직접 연 스트림 (녹음 스트림 재사용 시 false)
+
+function setWaveMode(mode) {
+  waveWrap.className = 'wave-wrap' + (mode ? ' live mode-' + mode : '');
+}
+
+function resetWaveBars() {
+  waveBars.forEach(b => { b.style.height = '4px'; });
+}
+
+// 실제 마이크 주파수를 막대에 반영 (듣는 중)
+function drawMicFrequencies() {
+  if (!waveAnalyser) return;
+  const data = new Uint8Array(waveAnalyser.frequencyBinCount);
+  waveAnalyser.getByteFrequencyData(data);
+  const step = Math.floor(data.length / WAVE_BAR_COUNT) || 1;
+  for (let i = 0; i < WAVE_BAR_COUNT; i++) {
+    const v = data[i * step] || 0;
+    const h = 4 + (v / 255) * 26;
+    waveBars[i].style.height = h + 'px';
+  }
+  waveAnimHandle = requestAnimationFrame(drawMicFrequencies);
+}
+
+// 마이크 입력 기반 파형 시작 — stream을 넘기면 그 스트림을 그대로 분석에 재사용
+async function startMicWave(existingStream) {
+  try {
+    waveAudioCtx = waveAudioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (waveAudioCtx.state === 'suspended') await waveAudioCtx.resume();
+
+    if (existingStream) {
+      waveMicStream = existingStream;
+      waveMicSourceIsOwn = false;
+    } else {
+      waveMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      waveMicSourceIsOwn = true;
+    }
+
+    const source = waveAudioCtx.createMediaStreamSource(waveMicStream);
+    waveAnalyser = waveAudioCtx.createAnalyser();
+    waveAnalyser.fftSize = 64;
+    waveAnalyser.smoothingTimeConstant = 0.75;
+    source.connect(waveAnalyser); // destination에는 연결하지 않음 (에코 방지)
+
+    setWaveMode('listening');
+    cancelAnimationFrame(waveAnimHandle);
+    drawMicFrequencies();
+  } catch (err) {
+    // 마이크 시각화 실패는 조용히 무시 (핵심 음성인식 기능에는 영향 없음)
+  }
+}
+
+function stopMicWave() {
+  cancelAnimationFrame(waveAnimHandle);
+  waveAnimHandle = null;
+  if (waveAnalyser) { try { waveAnalyser.disconnect(); } catch(e) {} waveAnalyser = null; }
+  if (waveMicSourceIsOwn && waveMicStream) {
+    waveMicStream.getTracks().forEach(t => t.stop());
+  }
+  waveMicStream = null;
+  setWaveMode(null);
+  resetWaveBars();
+}
+
+// 합성음성(TTS) 리듬에 맞춘 의사(疑似) 파형 — 실제 오디오 신호가 아니라
+// 말하는 동안 자연스럽게 출렁이도록 만든 시각 효과입니다.
+let speakWaveActive = false;
+function drawSpeakingWave() {
+  if (!speakWaveActive) return;
+  const t = performance.now() / 1000;
+  for (let i = 0; i < WAVE_BAR_COUNT; i++) {
+    const phase = i * 0.6;
+    const envelope = 0.5 + 0.5 * Math.sin(t * 2.1 + phase * 0.3);
+    const jitter = Math.random() * 0.4;
+    const amp = Math.max(0, Math.min(1, envelope * 0.7 + jitter));
+    waveBars[i].style.height = (4 + amp * 24) + 'px';
+  }
+  waveAnimHandle = requestAnimationFrame(drawSpeakingWave);
+}
+
+function startSpeakingWave() {
+  speakWaveActive = true;
+  setWaveMode('speaking');
+  cancelAnimationFrame(waveAnimHandle);
+  drawSpeakingWave();
+}
+
+function stopSpeakingWave() {
+  speakWaveActive = false;
+  cancelAnimationFrame(waveAnimHandle);
+  waveAnimHandle = null;
+  setWaveMode(null);
+  resetWaveBars();
+}
+
+function addMsg(role, html, srcLabel) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.innerHTML = html + (srcLabel ? `<span class="src">${srcLabel}</span>` : '');
+  chatScroll.appendChild(div);
+  chatScroll.scrollTop = chatScroll.scrollHeight;
+  return div;
+}
+
+addMsg('system', '데모 시작 — 아래 예시 질문 버튼을 눌러보거나 직접 입력/음성으로 물어보세요.');
+addMsg('bot', '안녕하세요, 상무님. 무엇을 도와드릴까요? 약관 조회, 보상사례 추정, 의학정보, 일정 등록을 도와드릴 수 있어요.');
+
+// (연속 대화 모드 관련 함수와 마이크 클릭 처리는 micBtn/recognition이 선언된
+// 아래쪽으로 옮겼습니다 — 선언 전에 참조하면 전체 스크립트가 멈추는 문제가 있었습니다)
+
+function routeAndAnswer(text) {
+  const t = text.trim();
+  if (!t) return;
+  addMsg('user', escapeHtml(t));
+
+  // 대화 중 "대화 종료"처럼 말하면 AI에게 묻지 않고 바로 끝냅니다.
+  const lower = t.toLowerCase();
+  if (continuousMode && END_CONVO_PHRASES.some(p => lower.includes(p))) {
+    continuousMode = false;
+    micBtn.classList.remove('continuous');
+    addMsg('bot', '네, 대화를 종료할게요. 필요하면 마이크를 다시 눌러주세요.');
+    speak('네, 대화를 종료할게요.', () => setStatus(null, '마이크를 누르면 다시 대화할 수 있어요.'));
+    return;
+  }
+
+  setStatus('thinking', '생각하는 중…');
+
+  // 일정 등록은 정확한 등록을 위해 대화형 AI를 거치지 않고 기존 규칙으로 바로 처리합니다.
+  const isScheduleRequest = lower.includes('등록') && (lower.includes('일정') || lower.includes('미팅') || lower.includes('약속'));
+  if (isScheduleRequest) {
+    setTimeout(() => {
+      const result = generateAnswer(t);
+      addMsg('bot', result.html, result.src);
+      setStatus('speaking', '답변하는 중…');
+      speak(result.speech, afterAnswerDone);
+    }, 400);
+    return;
+  }
+
+  askAI(t);
+}
+
+// 최근 대화 내용(끝말잇기처럼 문맥이 이어져야 하는 대화를 위해 기억해둡니다)
+let CHAT_HISTORY = [];
+
+// 질문의 실제 의도를 이해해서 자연스럽게 답하도록, 서버(OpenAI)에 물어봅니다.
+// (약관/보상사례/미디어 목록을 함께 보내 참고자료로 쓰되, 답변 자체는 AI가 만듭니다)
+async function askAI(text) {
+  if (!API_BASE) {
+    const result = generateAnswer(text);
+    addMsg('bot', result.html, result.src);
+    setStatus('speaking', '답변하는 중…');
+    speak(result.speech, afterAnswerDone);
+    return;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ message: text, termsDb: TERMS_DB, claimsDb: CLAIMS_DB, mediaDb: MEDIA_DB, history: CHAT_HISTORY }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'AI 상담 응답에 실패했습니다.');
+
+    CHAT_HISTORY.push({ role: 'user', content: text });
+    CHAT_HISTORY.push({ role: 'assistant', content: data.reply || '' });
+    if (CHAT_HISTORY.length > 20) CHAT_HISTORY = CHAT_HISTORY.slice(-20);
+
+    const html = escapeHtml(data.reply || '').replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:#1d3a6e;word-break:break-all">$1</a>').replace(/\n/g, '<br>');
+    const bubble = addMsg('bot', html, null);
+
+    // 영상 요청이면 하나를 임의로 바로 재생하지 않고, 후보 목록을 보여주고 직접 고르게 합니다.
+    if (data.action && data.action.type === 'media_list' && Array.isArray(data.action.titles) && data.action.titles.length) {
+      const matched = data.action.titles
+        .map(title => MEDIA_DB.find(m => m.title === title))
+        .filter(Boolean);
+      if (matched.length) {
+        const listWrap = document.createElement('div');
+        listWrap.className = 'media-pick-list';
+        matched.forEach(m => {
+          const btn = document.createElement('button');
+          btn.className = 'media-pick-btn';
+          btn.type = 'button';
+          btn.textContent = `▶ ${m.title} (${m.length})`;
+          btn.addEventListener('click', () => {
+            openPlayer(m);
+            addMsg('bot', `<b>${escapeHtml(m.title)}</b> 영상을 재생할게요.`, '출처: <b>미디어 DB</b>');
+          });
+          listWrap.appendChild(btn);
+        });
+        bubble.appendChild(listWrap);
+        chatScroll.scrollTop = chatScroll.scrollHeight;
+      }
+    }
+
+    setStatus('speaking', '답변하는 중…');
+    speak(data.speech || data.reply || '', afterAnswerDone);
+  } catch (err) {
+    // AI 상담 서버 호출이 실패했을 때만 기존 규칙 기반 답변으로 대신합니다.
+    const result = generateAnswer(text);
+    addMsg('bot', result.html, result.src);
+    setStatus('speaking', '답변하는 중…');
+    speak(result.speech, afterAnswerDone);
+  }
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+/* ============================================================
+   채팅 중 사진/서류 첨부 (예: 고객 서류, 상품 팜플렛 사진을 올리고
+   "이거 봐줘" 처럼 물어보면 내용을 분석해 답변)
+   - 첨부 파일 자체는 서버에 저장하지 않고, 분석 요청 한 번에만 사용됩니다.
+============================================================ */
+let pendingAttachment = null; // { file, dataUrl }
+
+document.getElementById('attachBtn').addEventListener('click', () => {
+  document.getElementById('attachInput').click();
+});
+
+document.getElementById('attachInput').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    pendingAttachment = { file, dataUrl: reader.result };
+    document.getElementById('attachPreviewImg').src = reader.result;
+    document.getElementById('attachPreviewName').textContent = file.name;
+    document.getElementById('attachPreview').classList.add('show');
+    document.getElementById('textInput').placeholder = '이 사진/서류에 대해 궁금한 점을 적어주세요 (비워두면 자동으로 요약해드려요)';
+    document.getElementById('textInput').focus();
+  };
+  reader.readAsDataURL(file);
+});
+
+document.getElementById('attachRemoveBtn').addEventListener('click', clearAttachment);
+
+function clearAttachment() {
+  pendingAttachment = null;
+  document.getElementById('attachInput').value = '';
+  document.getElementById('attachPreview').classList.remove('show');
+  document.getElementById('textInput').placeholder = '메시지를 입력하거나 마이크를 누르세요';
+}
+
+async function sendWithAttachment(text) {
+  const question = (text || '').trim();
+  const attachment = pendingAttachment;
+  clearAttachment();
+
+  addMsg('user', `<img class="chat-photo" src="${attachment.dataUrl}">` + (question ? escapeHtml(question) : '(사진/서류 첨부)'));
+  setStatus('thinking', '첨부 파일을 살펴보는 중…');
+
+  if (!API_BASE) {
+    setStatus(null, '무엇을 도와드릴까요?');
+    addMsg('system', '📎 첨부 분석 서버가 아직 연결되지 않았습니다. backend-server를 Railway에 배포하면 사진/서류 속 글자와 내용을 읽어 답변해 드릴 수 있어요.');
+    return;
+  }
+
+  try {
+    const form = new FormData();
+    form.append('file', attachment.file);
+    form.append('question', question);
+    const res = await fetch(`${API_BASE}/api/vision`, { method: 'POST', body: form, headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '분석에 실패했습니다.');
+    const answer = data.answer || '내용을 분석하지 못했습니다.';
+    addMsg('bot', escapeHtml(answer).replace(/\n/g, '<br>'), '분석: 첨부 이미지 기반 답변');
+    setStatus('speaking', '답변하는 중…');
+    speak(answer, () => setStatus(null, '무엇을 도와드릴까요?'));
+  } catch (err) {
+    setStatus(null, '무엇을 도와드릴까요?');
+    addMsg('system', '⚠️ 첨부 파일 분석에 실패했습니다: ' + err.message);
+  }
+}
+
+function generateAnswer(text) {
+  const t = text.toLowerCase();
+
+  // 1) 일정 등록
+  if (t.includes('등록') && (t.includes('일정') || t.includes('미팅') || t.includes('약속'))) {
+    const timeGuess = (text.match(/(내일|오늘|모레)?\s*(오전|오후)?\s*\d{1,2}시/) || [text])[0];
+    const titleGuess = text.replace('등록해줘', '').replace('등록', '').trim();
+    let categoryGuess = '기타';
+    if (t.includes('계약')) categoryGuess = '계약';
+    else if (t.includes('방문')) categoryGuess = '방문';
+    else if (t.includes('미팅') || t.includes('약속')) categoryGuess = '미팅';
+    addScheduleItem(titleGuess, timeGuess, categoryGuess, '음성/채팅으로 등록됨');
+    return {
+      html: `일정을 등록했습니다.<br><b>${escapeHtml(titleGuess)}</b> · ${escapeHtml(timeGuess || '')}<br>일정 탭에서 확인하실 수 있고, 1시간 전 알림도 설정해 드릴게요.`,
+      src: '기록 위치: <b>일정 DB</b>',
+      speech: `${titleGuess} 일정을 등록했습니다. 일정 탭에서 확인해 주세요.`
+    };
+  }
+
+  // 2) 약관 조회
+  const termsHit = TERMS_DB.find(row =>
+    t.includes(row.company.toLowerCase()) ||
+    (t.includes('암') && row.rider.includes('암')) ||
+    (t.includes('간병') && row.rider.includes('간병')) ||
+    (t.includes('실손') && row.product.includes('실손'))
+  );
+  if (termsHit && (t.includes('보장') || t.includes('특약') || t.includes('면책') || t.includes('보상하지'))) {
+    return {
+      html: `<b>${termsHit.company} · ${termsHit.product} (${termsHit.rider})</b><br><br>
+        <u>보장 내용</u>: ${termsHit.coverage}<br><br>
+        <u>보상하지 않는 사항</u><br>` +
+        termsHit.exclusions.map(e => '· ' + e).join('<br>'),
+      src: `출처: <b>약관 DB</b> &gt; ${termsHit.company} &gt; ${termsHit.product} 약관 (데모용 가상 데이터)`,
+      speech: `${termsHit.company} ${termsHit.rider} 관련해서, 보상하지 않는 대표 사항은 ${termsHit.exclusions[0]} 등이 있습니다.`
+    };
+  }
+
+  // 3) 청구금액 추정
+  const claimHit = CLAIMS_DB.find(row => row.keyword.some(k => t.includes(k)));
+  if (claimHit) {
+    return {
+      html: `<b>${claimHit.caseTitle}</b><br><br>${claimHit.summary}<br><br>
+        <u>예상 범위</u>: ${claimHit.range}<br>
+        <span style="color:#b5533f;">※ ${claimHit.note}</span>`,
+      src: '출처: <b>보상사례 DB</b> (유사 사례 기반 추정치, 확정 금액 아님)',
+      speech: `${claimHit.caseTitle} 관련해서, 대략 ${claimHit.range} 수준으로 지급된 사례가 많지만, 실제 금액은 심사에 따라 달라질 수 있습니다.`
+    };
+  }
+
+  // 4) 미디어 재생
+  const mediaHit = MEDIA_DB.find(m => m.tags.some(tag => t.includes(tag.toLowerCase())) || t.includes('영상') || t.includes('재생'));
+  if (mediaHit && (t.includes('영상') || t.includes('재생') || t.includes('틀어'))) {
+    openPlayer(mediaHit);
+    return {
+      html: `<b>${mediaHit.title}</b> (${mediaHit.length}) 영상을 재생할게요.`,
+      src: '출처: <b>미디어 DB</b>',
+      speech: `${mediaHit.title} 영상을 재생합니다.`
+    };
+  }
+
+  // 5) 의학정보 (일반 지식 폴백)
+  if (t.includes('치료') || t.includes('부작용') || t.includes('암') || t.includes('수술')) {
+    return {
+      html: `일반적인 의학 정보로 안내드리면, 해당 질환은 병기·환자 상태에 따라 수술·항암·방사선 치료 등이 병행되며, 부작용과 치료기간은 치료 방식에 따라 편차가 큽니다.<br><br>
+        <span style="color:#5b6884;font-size:12.5px;">이 답변은 일반 의학정보이며 진단이 아닙니다. 고객 안내 시 참고용으로만 활용해 주세요.</span>`,
+      src: '출처: <b>일반 의학지식 + 참고자료</b> (실제 서비스에서는 최신 가이드라인 검색 연동 권장)',
+      speech: `일반적으로 병기와 환자 상태에 따라 치료법과 회복 기간이 달라집니다. 자세한 내용은 답변을 참고해 주세요.`
+    };
+  }
+
+  // 기본 폴백
+  return {
+    html: `아직 정확히 답하기 어려운 질문이에요. 회사명·상품명을 포함해서 다시 물어봐 주시거나, 예시 질문 버튼을 눌러보세요.`,
+    src: null,
+    speech: `죄송해요, 다시 한 번 구체적으로 말씀해 주시겠어요?`
+  };
+}
+
+document.getElementById('sendBtn').addEventListener('click', () => {
+  const input = document.getElementById('textInput');
+  if (pendingAttachment) {
+    sendWithAttachment(input.value);
+  } else {
+    routeAndAnswer(input.value);
+  }
+  input.value = '';
+});
+document.getElementById('textInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('sendBtn').click();
+});
+document.querySelectorAll('.quick').forEach(btn => {
+  btn.addEventListener('click', () => routeAndAnswer(btn.dataset.q));
+});
+
+/* ============================================================
+   음성 입력
+   - 안드로이드/데스크톱 Chrome·Edge: Web Speech API로 즉시 인식
+   - iOS(사파리 엔진 전부): Web Speech API 미지원 → 녹음 후
+     서버의 STT(Whisper/클로바 등)로 전송하는 방식 필요.
+     아래 transcribeAudio()가 그 연동 지점입니다.
+============================================================ */
+let recognition = null;
+let recognizing = false;
+const micBtn = document.getElementById('micBtn');
+const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+const canRecordAudio = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+
+let mediaRecorder = null;
+let audioChunks = [];
+let isRecordingAudio = false;
+
+if (SpeechRecognitionAPI) {
+  recognition = new SpeechRecognitionAPI();
+  recognition.lang = 'ko-KR';
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => {
+    recognizing = true;
+    micBtn.classList.add('active');
+    setStatus('listening', '듣고 있어요…');
+    // SpeechRecognition은 내부 오디오 스트림을 직접 내주지 않으므로,
+    // 파형 표시 전용으로 별도의 마이크 스트림을 하나 더 엽니다.
+    startMicWave(null);
+  };
+  recognition.onend = () => {
+    recognizing = false;
+    micBtn.classList.remove('active');
+    stopMicWave();
+  };
+  recognition.onresult = (e) => {
+    const said = e.results[0][0].transcript;
+    routeAndAnswer(said);
+  };
+  recognition.onerror = (e) => {
+    stopMicWave();
+    // 연속 대화 중 "아무 말도 안 함" 같은 사소한 오류는 계속 듣기를 이어갑니다.
+    // 권한 거부처럼 재시도해도 의미 없는 오류는 연속 모드를 끕니다.
+    if (continuousMode && e.error !== 'not-allowed' && e.error !== 'service-not-allowed') {
+      setTimeout(() => startListening(), 600);
+    } else {
+      if (continuousMode) {
+        continuousMode = false;
+        micBtn.classList.remove('continuous');
+      }
+      setStatus(null, '음성을 인식하지 못했어요. 다시 시도해 주세요.');
+    }
+  };
+} else if (canRecordAudio) {
+  micBtn.title = '눌러서 녹음 시작 / 다시 눌러서 종료 (iOS 호환 모드)';
+} else {
+  micBtn.title = '이 브라우저는 음성 입력을 지원하지 않습니다';
+}
+
+// ── 연속 대화 모드 ──────────────────────────────────────────
+// 마이크를 한 번 누르면, 답변이 끝날 때마다 자동으로 다시 듣기 시작해서
+// 매번 마이크를 다시 누를 필요가 없습니다. 마이크를 다시 누르거나
+// "대화 종료"처럼 말하면 끝납니다.
+let continuousMode = false;
+const END_CONVO_PHRASES = ['대화 종료', '대화종료', '그만할게', '그만 할게', '종료할게', '대화 끝', '그만해', '대화종료할게', '이제 그만'];
+
+function startListening() {
+  if (SpeechRecognitionAPI) {
+    if (!recognizing) recognition.start();
+  } else if (canRecordAudio) {
+    if (!isRecordingAudio) toggleAudioRecording();
+  } else {
+    continuousMode = false;
+    micBtn.classList.remove('continuous');
+    addMsg('system', '이 브라우저는 음성 입력을 지원하지 않습니다. 텍스트로 입력해 주세요.');
+  }
+}
+
+function stopListening() {
+  if (SpeechRecognitionAPI && recognizing) recognition.stop();
+  if (isRecordingAudio) toggleAudioRecording();
+}
+
+function afterAnswerDone() {
+  if (continuousMode) {
+    setStatus('listening', '듣고 있어요… (다시 누르면 대화 종료)');
+    setTimeout(() => startListening(), 500); // TTS 꼬리음이 마이크에 잡히지 않도록 약간의 여유
+  } else {
+    setStatus(null, '무엇을 도와드릴까요?');
+  }
+}
+
+micBtn.addEventListener('click', () => {
+  if (continuousMode) {
+    continuousMode = false;
+    micBtn.classList.remove('continuous');
+    stopListening();
+    setStatus(null, '대화를 종료했습니다. 마이크를 다시 누르면 이어서 말씀하실 수 있어요.');
+    return;
+  }
+  continuousMode = true;
+  micBtn.classList.add('continuous');
+  startListening();
+});
+
+// ── 백엔드 서버 주소 ──────────────────────────────────────────
+// 음성인식(STT) · 로그인 · 일정 저장을 모두 같은 backend-server(Railway)가
+// 처리합니다. backend-server 폴더를 Railway에 배포한 뒤, 발급받은 주소를
+// 아래에 채워 넣으세요.
+// 예: const API_BASE = 'https://xxxx.up.railway.app';
+// 비워두면 로그인/일정 저장 기능은 "둘러보기(브라우저에만 임시 저장)"
+// 모드로 동작하고, 음성 인식은 텍스트 입력으로 안내하는 대체 동작을 합니다.
+const API_BASE = 'https://leaders-ai-backend-production.up.railway.app';
+
+async function transcribeAudio(blob) {
+  try {
+    const form = new FormData();
+    form.append('audio', blob, 'recording.webm');
+    const res = await fetch(`${API_BASE}/api/stt`, { method: 'POST', body: form });
+    if (!res.ok) throw new Error('STT 서버 응답 오류');
+    const data = await res.json();
+    if (data && data.text) return data.text;
+    throw new Error('빈 인식 결과');
+  } catch (err) {
+    addMsg('system', '🎙️ 녹음이 완료됐습니다. 아직 음성 인식 서버(/api/stt)가 연결되어 있지 않아, 방금 하신 말씀을 아래에 직접 입력해 주세요. (서버 연동 후에는 자동으로 인식됩니다)');
+    document.getElementById('textInput').focus();
+    return null;
+  }
+}
+
+/* ============================================================
+   로그인 / 회원가입 / 개인 일정 API 연동
+   - 별도 계정 방식(자체 아이디/비밀번호), 서버가 없으면 "둘러보기" 모드
+   - 일정은 카테고리(미팅/계약/방문/개인/기타)별로 저장·조회됩니다
+============================================================ */
+let AUTH_TOKEN = localStorage.getItem('leaders_ai_token') || '';
+let AUTH_USER_NAME = localStorage.getItem('leaders_ai_user_name') || '';
+let AUTH_ROLE = localStorage.getItem('leaders_ai_role') || 'agent';
+let GUEST_MODE = !API_BASE; // 서버 주소가 없으면 자동으로 둘러보기 모드
+let ACTIVE_CATEGORY = '전체';
+
+function authHeaders() {
+  return AUTH_TOKEN ? { 'Authorization': 'Bearer ' + AUTH_TOKEN } : {};
+}
+
+function showLoginScreen(msg) {
+  document.getElementById('loginScreen').classList.remove('hidden');
+  document.getElementById('loginMsg').textContent = msg || '';
+  document.getElementById('loginServerNote').textContent = API_BASE
+    ? ''
+    : '※ 아직 백엔드 서버 주소(API_BASE)가 설정되지 않아, 둘러보기 모드로만 이용할 수 있습니다.';
+}
+function hideLoginScreen() {
+  document.getElementById('loginScreen').classList.add('hidden');
+}
+
+document.getElementById('tabLogin').addEventListener('click', () => {
+  document.getElementById('tabLogin').classList.add('active');
+  document.getElementById('tabRegister').classList.remove('active');
+  document.getElementById('loginFormWrap').style.display = 'block';
+  document.getElementById('registerFormWrap').style.display = 'none';
+  document.getElementById('loginMsg').textContent = '';
+});
+document.getElementById('tabRegister').addEventListener('click', () => {
+  document.getElementById('tabRegister').classList.add('active');
+  document.getElementById('tabLogin').classList.remove('active');
+  document.getElementById('registerFormWrap').style.display = 'block';
+  document.getElementById('loginFormWrap').style.display = 'none';
+  document.getElementById('loginMsg').textContent = '';
+  loadBranchesForRegister();
+});
+
+document.getElementById('guestLoginBtn').addEventListener('click', () => {
+  GUEST_MODE = true;
+  AUTH_TOKEN = '';
+  AUTH_USER_NAME = '둘러보기';
+  hideLoginScreen();
+  afterAuthReady();
+});
+
+document.getElementById('loginSubmitBtn').addEventListener('click', async () => {
+  const id = document.getElementById('loginId').value.trim();
+  const pw = document.getElementById('loginPw').value;
+  const msgEl = document.getElementById('loginMsg');
+  if (!id || !pw) { msgEl.textContent = '아이디와 비밀번호를 입력해주세요.'; return; }
+  if (!API_BASE) { msgEl.textContent = '서버가 아직 연결되지 않아 로그인할 수 없습니다. 둘러보기로 이용해주세요.'; return; }
+  msgEl.textContent = '로그인 중…';
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ loginId: id, password: pw })
+    });
+    const data = await res.json();
+    if (res.status === 403 && data.pendingApproval) {
+      msgEl.textContent = data.error || '아직 관리자(지사장) 승인이 완료되지 않았습니다.';
+      return;
+    }
+    if (!res.ok) throw new Error(data.error || '로그인에 실패했습니다.');
+    AUTH_TOKEN = data.token; AUTH_USER_NAME = data.name; AUTH_ROLE = data.role || 'agent';
+    localStorage.setItem('leaders_ai_token', AUTH_TOKEN);
+    localStorage.setItem('leaders_ai_user_name', AUTH_USER_NAME);
+    localStorage.setItem('leaders_ai_role', AUTH_ROLE);
+    GUEST_MODE = false;
+    hideLoginScreen();
+    afterAuthReady();
+  } catch (err) {
+    msgEl.textContent = err.message;
+  }
+});
+
+document.getElementById('registerSubmitBtn').addEventListener('click', async () => {
+  const name = document.getElementById('regName').value.trim();
+  const id = document.getElementById('regId').value.trim();
+  const pw = document.getElementById('regPw').value;
+  const adminCode = document.getElementById('regAdminCode').value.trim();
+  const branchId = document.getElementById('regBranch').value;
+  const msgEl = document.getElementById('loginMsg');
+  if (!name || !id || !pw) { msgEl.textContent = '모든 항목을 입력해주세요.'; return; }
+  if (pw.length < 6) { msgEl.textContent = '비밀번호는 6자 이상으로 설정해주세요.'; return; }
+  if (!adminCode && !branchId) { msgEl.textContent = '소속 지사를 선택해주세요.'; return; }
+  if (!API_BASE) { msgEl.textContent = '서버가 아직 연결되지 않아 회원가입할 수 없습니다. 둘러보기로 이용해주세요.'; return; }
+  msgEl.textContent = '가입 처리 중…';
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/register`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, loginId: id, password: pw, adminCode: adminCode || undefined, branchId: branchId || undefined })
+    });
+    const data = await res.json();
+    if (res.status === 202 && data.pendingApproval) {
+      msgEl.style.color = '';
+      msgEl.textContent = data.message || '가입 신청이 접수되었습니다. 소속 지사의 지사장 승인 후 로그인하실 수 있습니다.';
+      document.getElementById('regName').value = '';
+      document.getElementById('regId').value = '';
+      document.getElementById('regPw').value = '';
+      document.getElementById('regAdminCode').value = '';
+      document.getElementById('regBranch').value = '';
+      document.getElementById('tabLogin').click();
+      return;
+    }
+    if (!res.ok) throw new Error(data.error || '회원가입에 실패했습니다.');
+    AUTH_TOKEN = data.token; AUTH_USER_NAME = data.name; AUTH_ROLE = data.role || 'agent';
+    localStorage.setItem('leaders_ai_token', AUTH_TOKEN);
+    localStorage.setItem('leaders_ai_user_name', AUTH_USER_NAME);
+    localStorage.setItem('leaders_ai_role', AUTH_ROLE);
+    GUEST_MODE = false;
+    hideLoginScreen();
+    afterAuthReady();
+  } catch (err) {
+    msgEl.textContent = err.message;
+  }
+});
+
+document.getElementById('logoutBtn').addEventListener('click', () => {
+  AUTH_TOKEN = ''; AUTH_USER_NAME = ''; AUTH_ROLE = 'agent'; GUEST_MODE = !API_BASE;
+  localStorage.removeItem('leaders_ai_token');
+  localStorage.removeItem('leaders_ai_user_name');
+  localStorage.removeItem('leaders_ai_role');
+  SCHEDULE_DB = [];
+  TERMS_DB = DEMO_TERMS_DB;
+  CLAIMS_DB = DEMO_CLAIMS_DB;
+  document.getElementById('adminTabBtn').style.display = 'none';
+  showLoginScreen();
+});
+
+function roleLabel(role) {
+  if (role === 'super_admin') return '상무(전체관리자)';
+  if (role === 'branch_admin') return '지사장';
+  return '설계사';
+}
+function isAdminRole(role) {
+  return role === 'super_admin' || role === 'branch_admin';
+}
+
+function afterAuthReady() {
+  document.getElementById('accountInfo').textContent = GUEST_MODE
+    ? '둘러보기 모드입니다. 일정은 이 브라우저에만 임시로 저장됩니다.'
+    : `${AUTH_USER_NAME}님으로 로그인되어 있습니다. (${roleLabel(AUTH_ROLE)}) 일정이 서버에 안전하게 저장됩니다.`;
+  document.getElementById('adminTabBtn').style.display = (!GUEST_MODE && isAdminRole(AUTH_ROLE)) ? '' : 'none';
+  const accBlock = document.getElementById('accountChangeBlock');
+  if (accBlock) accBlock.style.display = GUEST_MODE ? 'none' : '';
+  loadScheduleFromServer();
+  loadContentFromServer();
+}
+
+/* ---------- 계정: 아이디/비밀번호 본인 변경 ---------- */
+document.getElementById('accountChangeBtn').addEventListener('click', async () => {
+  const msgEl = document.getElementById('accountChangeMsg');
+  const newLoginId = document.getElementById('accChangeNewId').value.trim();
+  const newPassword = document.getElementById('accChangeNewPw').value;
+  const currentPassword = document.getElementById('accChangeCurrentPw').value;
+  msgEl.textContent = '';
+
+  if (GUEST_MODE || !API_BASE) { msgEl.textContent = '둘러보기 모드에서는 계정 정보를 변경할 수 없습니다.'; return; }
+  if (!currentPassword) { msgEl.textContent = '본인 확인을 위해 현재 비밀번호를 입력해주세요.'; return; }
+  if (!newLoginId && !newPassword) { msgEl.textContent = '바꾸실 아이디 또는 비밀번호 중 하나 이상 입력해주세요.'; return; }
+  if (newPassword && newPassword.length < 6) { msgEl.textContent = '새 비밀번호는 6자 이상이어야 합니다.'; return; }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/me`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ currentPassword, newLoginId: newLoginId || undefined, newPassword: newPassword || undefined })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '변경에 실패했습니다.');
+    msgEl.textContent = '변경되었습니다. 다음 로그인부터 새 정보로 접속해주세요.';
+    document.getElementById('accChangeNewId').value = '';
+    document.getElementById('accChangeNewPw').value = '';
+    document.getElementById('accChangeCurrentPw').value = '';
+  } catch (err) {
+    msgEl.textContent = err.message;
+  }
+});
+
+/* ---------- 약관/보상사례: 서버(관리자 DB)에서 최신 내용 불러오기 ---------- */
+async function loadContentFromServer() {
+  if (GUEST_MODE || !API_BASE) return; // 둘러보기 모드는 데모 데이터 그대로 사용
+  try {
+    const [termsRes, claimsRes] = await Promise.all([
+      fetch(`${API_BASE}/api/content/terms`, { headers: authHeaders() }),
+      fetch(`${API_BASE}/api/content/claims`, { headers: authHeaders() })
+    ]);
+    if (termsRes.ok) {
+      const termsData = await termsRes.json();
+      TERMS_DB = (termsData.items || []).map(row => ({
+        company: row.company, product: row.product, rider: row.rider,
+        coverage: row.coverage,
+        exclusions: Array.isArray(row.exclusions) ? row.exclusions : []
+      }));
+      if (TERMS_DB.length === 0) TERMS_DB = DEMO_TERMS_DB;
+    }
+    if (claimsRes.ok) {
+      const claimsData = await claimsRes.json();
+      CLAIMS_DB = (claimsData.items || []).map(row => ({
+        caseTitle: row.case_title, summary: row.summary, range: row.range_desc,
+        note: row.note || '',
+        keyword: (row.case_title + ' ' + row.summary).split(/[\s·,\/]+/).filter(Boolean)
+      }));
+      if (CLAIMS_DB.length === 0) CLAIMS_DB = DEMO_CLAIMS_DB;
+    }
+  } catch (err) {
+    console.error('약관/보상사례 불러오기 실패:', err);
+  }
+}
+
+/* ============================================================
+   관리자 패널 — 가입 승인 / 약관 관리 / 보상사례 관리
+============================================================ */
+async function renderAdminPanel() {
+  if (GUEST_MODE || !API_BASE || !isAdminRole(AUTH_ROLE)) return;
+  const isSuper = AUTH_ROLE === 'super_admin';
+  document.getElementById('branchManageBlock').style.display = isSuper ? 'block' : 'none';
+  document.getElementById('branchAdminCreateBlock').style.display = isSuper ? 'block' : 'none';
+  document.getElementById('productDocBlock').style.display = isSuper ? 'block' : 'none';
+  document.getElementById('knowledgeBlock').style.display = isSuper ? 'block' : 'none';
+  document.getElementById('adminScopeNote').textContent = isSuper
+    ? '전체 지사의 설계사가 보입니다. 승인/거절/승인취소 처리해주세요.'
+    : '우리 지사 소속 설계사만 보입니다. 승인/거절/승인취소 처리해주세요.';
+  const tasks = [renderAdminUsers(), renderAdminTerms(), renderAdminClaims()];
+  if (isSuper) tasks.push(renderAdminBranches(), populateBaBranchSelect(), renderAdminProducts(), renderKnowledge());
+  await Promise.all(tasks);
+}
+
+async function renderAdminUsers() {
+  const listEl = document.getElementById('adminUserList');
+  const emptyEl = document.getElementById('adminUserEmpty');
+  listEl.innerHTML = '';
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/users`, { headers: authHeaders() });
+    if (!res.ok) throw new Error('목록 조회 실패');
+    const data = await res.json();
+    const users = data.items || [];
+    if (users.length === 0) { emptyEl.style.display = 'block'; return; }
+    emptyEl.style.display = 'none';
+    users.forEach(u => {
+      const row = document.createElement('div');
+      row.className = 'admin-row';
+      const roleText = roleLabel(u.role);
+      const badgeClass = u.approved ? '' : 'pending';
+      const statusLabel = u.approved ? roleText : `${roleText} · 승인대기`;
+      const branchBadge = u.branch_name ? `<span class="branch-badge">${u.branch_name}</span>` : '';
+      row.innerHTML = `
+        <div class="who">${u.name} <span class="role-badge ${badgeClass}">${statusLabel}</span>${branchBadge}
+          <small>${u.login_id}</small>
+        </div>
+        <div class="admin-actions"></div>
+      `;
+      const actions = row.querySelector('.admin-actions');
+      if (!u.approved) {
+        const approveBtn = document.createElement('button');
+        approveBtn.className = 'admin-btn approve';
+        approveBtn.textContent = '승인';
+        approveBtn.onclick = () => adminApproveUser(u.id);
+        const rejectBtn = document.createElement('button');
+        rejectBtn.className = 'admin-btn reject';
+        rejectBtn.textContent = '거절';
+        rejectBtn.onclick = () => adminRejectUser(u.id);
+        actions.appendChild(approveBtn);
+        actions.appendChild(rejectBtn);
+      } else if (u.role === 'agent') {
+        const deactivateBtn = document.createElement('button');
+        deactivateBtn.className = 'admin-btn deactivate';
+        deactivateBtn.textContent = '승인 취소';
+        deactivateBtn.onclick = () => adminDeactivateUser(u.id);
+        actions.appendChild(deactivateBtn);
+      }
+      listEl.appendChild(row);
+    });
+  } catch (err) {
+    emptyEl.style.display = 'block';
+    emptyEl.textContent = '목록을 불러오지 못했습니다.';
+  }
+}
+
+async function adminApproveUser(id) {
+  await fetch(`${API_BASE}/api/admin/users/${id}/approve`, { method: 'POST', headers: authHeaders() });
+  renderAdminUsers();
+}
+async function adminRejectUser(id) {
+  if (!confirm('이 가입 신청을 거절(삭제)하시겠습니까?')) return;
+  await fetch(`${API_BASE}/api/admin/users/${id}/reject`, { method: 'POST', headers: authHeaders() });
+  renderAdminUsers();
+}
+async function adminDeactivateUser(id) {
+  if (!confirm('이 설계사의 승인을 취소하시겠습니까? 다시 로그인할 수 없게 됩니다.')) return;
+  await fetch(`${API_BASE}/api/admin/users/${id}/deactivate`, { method: 'POST', headers: authHeaders() });
+  renderAdminUsers();
+}
+
+/* ---- 지사 관리 (상무 전용) ---- */
+async function renderAdminBranches() {
+  const listEl = document.getElementById('branchList');
+  const emptyEl = document.getElementById('branchEmpty');
+  listEl.innerHTML = '';
+  try {
+    const res = await fetch(`${API_BASE}/api/branches`);
+    if (!res.ok) throw new Error('조회 실패');
+    const data = await res.json();
+    const items = data.items || [];
+    if (items.length === 0) { emptyEl.style.display = 'block'; return; }
+    emptyEl.style.display = 'none';
+    items.forEach(b => {
+      const row = document.createElement('div');
+      row.className = 'admin-row';
+      row.innerHTML = `<div class="who">${b.name}</div><div class="admin-actions"></div>`;
+      const delBtn = document.createElement('button');
+      delBtn.className = 'admin-btn delete';
+      delBtn.textContent = '삭제';
+      delBtn.onclick = () => adminDeleteBranch(b.id);
+      row.querySelector('.admin-actions').appendChild(delBtn);
+      listEl.appendChild(row);
+    });
+  } catch (err) {
+    emptyEl.style.display = 'block';
+    emptyEl.textContent = '지사 목록을 불러오지 못했습니다.';
+  }
+}
+
+document.getElementById('branchAddBtn').addEventListener('click', async () => {
+  const name = document.getElementById('branchNameInput').value.trim();
+  const msgEl = document.getElementById('branchMsg');
+  if (!name) { msgEl.textContent = '지사명을 입력해주세요.'; return; }
+  msgEl.textContent = '등록 중…';
+  try {
+    const res = await fetch(`${API_BASE}/api/branches`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ name })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '등록 실패');
+    document.getElementById('branchNameInput').value = '';
+    msgEl.textContent = '등록되었습니다.';
+    renderAdminBranches();
+    populateBaBranchSelect();
+    loadBranchesForRegister();
+  } catch (err) {
+    msgEl.textContent = err.message || '등록에 실패했습니다.';
+  }
+});
+
+async function adminDeleteBranch(id) {
+  if (!confirm('이 지사를 삭제하시겠습니까? (소속된 계정이 있으면 삭제되지 않습니다)')) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/branches/${id}`, { method: 'DELETE', headers: authHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '삭제 실패');
+    renderAdminBranches();
+    populateBaBranchSelect();
+    loadBranchesForRegister();
+  } catch (err) {
+    alert(err.message || '삭제에 실패했습니다.');
+  }
+}
+
+/* ---- 지사장 계정 생성 (상무 전용) ---- */
+async function populateBaBranchSelect() {
+  const sel = document.getElementById('baBranchSelect');
+  try {
+    const res = await fetch(`${API_BASE}/api/branches`);
+    const data = await res.json();
+    const items = data.items || [];
+    sel.innerHTML = '<option value="">소속 지사 선택</option>' +
+      items.map(b => `<option value="${b.id}">${b.name}</option>`).join('');
+  } catch (err) {
+    sel.innerHTML = '<option value="">지사 목록을 불러오지 못했습니다</option>';
+  }
+}
+
+document.getElementById('branchAdminAddBtn').addEventListener('click', async () => {
+  const name = document.getElementById('baName').value.trim();
+  const loginId = document.getElementById('baLoginId').value.trim();
+  const password = document.getElementById('baPassword').value;
+  const branchId = document.getElementById('baBranchSelect').value;
+  const msgEl = document.getElementById('branchAdminMsg');
+  if (!name || !loginId || !password || !branchId) { msgEl.textContent = '모든 항목을 입력해주세요.'; return; }
+  if (password.length < 6) { msgEl.textContent = '비밀번호는 6자 이상으로 설정해주세요.'; return; }
+  msgEl.textContent = '생성 중…';
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/branch-admins`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ name, loginId, password, branchId })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '생성 실패');
+    msgEl.textContent = `${name} 지사장 계정이 생성되었습니다. (아이디: ${loginId})`;
+    document.getElementById('baName').value = '';
+    document.getElementById('baLoginId').value = '';
+    document.getElementById('baPassword').value = '';
+    renderAdminUsers();
+  } catch (err) {
+    msgEl.textContent = err.message || '생성에 실패했습니다.';
+  }
+});
+
+/* ---- 약관 관리 ---- */
+async function renderAdminTerms() {
+  const listEl = document.getElementById('termList');
+  const emptyEl = document.getElementById('termEmpty');
+  listEl.innerHTML = '';
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/terms`, { headers: authHeaders() });
+    if (!res.ok) throw new Error('조회 실패');
+    const data = await res.json();
+    const items = data.items || [];
+    if (items.length === 0) { emptyEl.style.display = 'block'; return; }
+    emptyEl.style.display = 'none';
+    items.forEach(row => {
+      const exclusions = Array.isArray(row.exclusions) ? row.exclusions : [];
+      const card = document.createElement('div');
+      card.className = 'admin-item-card';
+      card.innerHTML = `
+        <div class="title">${row.company} · ${row.product} · ${row.rider}</div>
+        <div class="body">보장: ${row.coverage}\n유의사항: ${exclusions.join(' / ') || '-'}</div>
+        <div class="admin-actions"></div>
+      `;
+      const actions = card.querySelector('.admin-actions');
+      const delBtn = document.createElement('button');
+      delBtn.className = 'admin-btn delete';
+      delBtn.textContent = '삭제';
+      delBtn.onclick = () => adminDeleteTerm(row.id);
+      actions.appendChild(delBtn);
+      listEl.appendChild(card);
+    });
+  } catch (err) {
+    emptyEl.style.display = 'block';
+    emptyEl.textContent = '약관 목록을 불러오지 못했습니다.';
+  }
+}
+
+document.getElementById('termAddBtn').addEventListener('click', async () => {
+  const company = document.getElementById('termCompany').value.trim();
+  const product = document.getElementById('termProduct').value.trim();
+  const rider = document.getElementById('termRider').value.trim();
+  const coverage = document.getElementById('termCoverage').value.trim();
+  const exclusions = document.getElementById('termExclusions').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const msgEl = document.getElementById('termMsg');
+  if (!company || !product || !rider || !coverage) { msgEl.textContent = '보험사명·상품명·특약명·보장내용은 필수입니다.'; return; }
+  msgEl.textContent = '등록 중…';
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/terms`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ company, product, rider, coverage, exclusions })
+    });
+    if (!res.ok) throw new Error('등록 실패');
+    ['termCompany','termProduct','termRider','termCoverage','termExclusions'].forEach(id => document.getElementById(id).value = '');
+    msgEl.textContent = '등록되었습니다.';
+    renderAdminTerms();
+    loadContentFromServer();
+  } catch (err) {
+    msgEl.textContent = '등록에 실패했습니다. 잠시 후 다시 시도해주세요.';
+  }
+});
+
+async function adminDeleteTerm(id) {
+  if (!confirm('이 약관을 삭제하시겠습니까?')) return;
+  await fetch(`${API_BASE}/api/admin/terms/${id}`, { method: 'DELETE', headers: authHeaders() });
+  renderAdminTerms();
+  loadContentFromServer();
+}
+
+
+/* ---- 월별 보험사 상품자료 관리 (상무 전용) ---- */
+(function setDefaultProdMonth() {
+  const d = new Date();
+  document.getElementById('prodMonth').value = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+})();
+
+async function renderAdminProducts() {
+  const listEl = document.getElementById('prodList');
+  const emptyEl = document.getElementById('prodEmpty');
+  listEl.innerHTML = '';
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/products`, { headers: authHeaders() });
+    if (!res.ok) throw new Error('조회 실패');
+    const items = (await res.json()).items || [];
+    if (items.length === 0) { emptyEl.style.display = 'block'; emptyEl.textContent = '등록된 상품자료가 없습니다.'; return; }
+    emptyEl.style.display = 'none';
+    items.forEach(row => {
+      const card = document.createElement('div');
+      card.className = 'admin-item-card';
+      card.innerHTML = `
+        <div class="title">${escapeHtml(row.month)} · ${escapeHtml(row.company)}</div>
+        <div class="body">${escapeHtml(row.title)} (${Number(row.chars).toLocaleString()}자)</div>
+        <div class="admin-actions"></div>`;
+      const delBtn = document.createElement('button');
+      delBtn.className = 'admin-btn delete';
+      delBtn.textContent = '삭제';
+      delBtn.onclick = async () => {
+        if (!confirm('이 상품자료를 삭제하시겠습니까?')) return;
+        await fetch(`${API_BASE}/api/admin/products/${row.id}`, { method: 'DELETE', headers: authHeaders() });
+        renderAdminProducts();
+      };
+      card.querySelector('.admin-actions').appendChild(delBtn);
+      listEl.appendChild(card);
+    });
+  } catch (err) {
+    emptyEl.style.display = 'block';
+    emptyEl.textContent = '상품자료 목록을 불러오지 못했습니다.';
+  }
+}
+
+function prodFieldsOk(msgEl) {
+  const month = document.getElementById('prodMonth').value;
+  const company = document.getElementById('prodCompany').value.trim();
+  if (!month || !company) { msgEl.textContent = '월과 보험사명을 입력해주세요.'; return null; }
+  return { month, company, title: document.getElementById('prodTitle').value.trim() };
+}
+
+document.getElementById('prodAddTextBtn').addEventListener('click', async () => {
+  const msgEl = document.getElementById('prodMsg');
+  const f = prodFieldsOk(msgEl); if (!f) return;
+  const content = document.getElementById('prodContent').value.trim();
+  if (!f.title || !content) { msgEl.textContent = '자료 제목과 내용을 입력해주세요.'; return; }
+  msgEl.textContent = '등록 중…';
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/products`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ ...f, content })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '등록 실패');
+    document.getElementById('prodContent').value = '';
+    document.getElementById('prodTitle').value = '';
+    msgEl.textContent = '등록되었습니다.';
+    renderAdminProducts();
+  } catch (err) { msgEl.textContent = err.message; }
+});
+
+document.getElementById('prodAddFileBtn').addEventListener('click', async () => {
+  const msgEl = document.getElementById('prodMsg');
+  const f = prodFieldsOk(msgEl); if (!f) return;
+  const file = document.getElementById('prodFile').files[0];
+  if (!file) { msgEl.textContent = '올릴 파일을 선택해주세요.'; return; }
+  msgEl.textContent = '파일에서 글자를 읽는 중… (큰 파일은 잠시 걸립니다)';
+  const form = new FormData();
+  form.append('month', f.month); form.append('company', f.company);
+  form.append('title', f.title || file.name); form.append('file', file);
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/products/upload`, { method: 'POST', headers: authHeaders(), body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '등록 실패');
+    document.getElementById('prodFile').value = '';
+    document.getElementById('prodTitle').value = '';
+    msgEl.textContent = `등록되었습니다. (글자 ${Number(data.chars).toLocaleString()}자 읽음)`;
+    renderAdminProducts();
+  } catch (err) { msgEl.textContent = err.message; }
+});
+
+
+/* ---- 학습 지식창고 (상무 전용) ---- */
+let kCurrentJob = null;
+let kPollTimer = null;
+
+async function kFetch(path, opts = {}) {
+  const isForm = opts.body instanceof FormData;
+  const headers = { ...(opts.body && !isForm ? { 'Content-Type': 'application/json' } : {}), ...authHeaders() };
+  const res = await fetch(`${API_BASE}/api/admin/knowledge${path}`, { ...opts, headers });
+  let data = {};
+  try { data = await res.json(); } catch (e) { /* 빈 응답 */ }
+  if (!res.ok) throw new Error(data.error || `요청 실패 (${res.status})`);
+  return data;
+}
+function kMsg(t) { document.getElementById('kMsg').textContent = t || ''; }
+function kOut(t) {
+  const el = document.getElementById('kOut');
+  el.textContent = t || '';
+  el.style.display = t ? 'block' : 'none';
+}
+function kBusy(btn, on, label) { btn.disabled = on; if (label) btn.dataset.label = btn.dataset.label || btn.textContent; btn.textContent = on ? '처리 중…' : (btn.dataset.label || btn.textContent); }
+
+async function renderKnowledge() {
+  const listEl = document.getElementById('kList');
+  const emptyEl = document.getElementById('kEmpty');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+  try {
+    const items = (await kFetch('/sources')).items || [];
+    if (!items.length) { emptyEl.style.display = 'block'; return; }
+    emptyEl.style.display = 'none';
+    items.forEach(row => {
+      const kind = row.mode === 'data' ? '표·숫자 자료(원형 보관)' : '학습 노트';
+      const card = document.createElement('div');
+      card.className = 'admin-item-card';
+      card.innerHTML = `<div class="title">${escapeHtml(row.source_name)}</div>
+        <div class="body">${kind} · 자료 ${row.docs}건 · ${row.mode === 'data' ? '쪽' : '노트'} ${row.entries}개</div>
+        <div class="admin-actions"></div>`;
+      const act = card.querySelector('.admin-actions');
+      const viewBtn = document.createElement('button');
+      viewBtn.className = 'admin-btn'; viewBtn.textContent = '내용 보기';
+      viewBtn.onclick = async () => {
+        try {
+          const n = (await kFetch('/notes?name=' + encodeURIComponent(row.source_name))).items || [];
+          kOut(n.length ? n.map((x, i) => `[${i + 1}] ${x.topic || ''}${x.note_type ? ' (' + x.note_type + ')' : ''}${x.page ? ' p.' + x.page : ''}\n${x.content}\n출처: ${x.url || x.title || ''}`).join('\n\n———\n\n') : '내용이 없습니다.');
+        } catch (e) { kMsg(e.message); }
+      };
+      const delBtn = document.createElement('button');
+      delBtn.className = 'admin-btn delete'; delBtn.textContent = '삭제';
+      delBtn.onclick = async () => {
+        if (!confirm(`"${row.source_name}" 학습 내용을 모두 삭제하시겠습니까?`)) return;
+        try { await kFetch('/source?name=' + encodeURIComponent(row.source_name), { method: 'DELETE' }); renderKnowledge(); } catch (e) { kMsg(e.message); }
+      };
+      act.appendChild(viewBtn); act.appendChild(delBtn);
+      listEl.appendChild(card);
+    });
+  } catch (err) {
+    emptyEl.style.display = 'block';
+    emptyEl.textContent = '학습 현황을 불러오지 못했습니다. (' + err.message + ')';
+  }
+}
+
+function kPoll(jobId) {
+  kCurrentJob = jobId;
+  document.getElementById('kCancelWrap').style.display = 'block';
+  clearInterval(kPollTimer);
+  const tick = async () => {
+    try {
+      const j = await kFetch('/jobs/' + jobId);
+      const base = `${j.done}/${j.total || '?'} 처리 · 정리된 자료 ${j.learned}건 · 노트/쪽 ${j.notes}개 · 건너뜀 ${j.skipped} · 실패 ${j.failed}`;
+      if (j.status === 'done' || j.status === 'error' || j.status === 'cancelled') {
+        clearInterval(kPollTimer);
+        document.getElementById('kCancelWrap').style.display = 'none';
+        const label = j.status === 'done' ? '학습이 끝났습니다.' : j.status === 'cancelled' ? '중지했습니다.' : '오류: ' + (j.message || '');
+        kMsg(`${label} ${base}`);
+        kOut((j.log || []).join('\n'));
+        renderKnowledge();
+      } else {
+        kMsg(`학습 중… ${base} (이 화면을 닫아도 서버에서 계속 진행됩니다)`);
+      }
+    } catch (e) {
+      clearInterval(kPollTimer);
+      document.getElementById('kCancelWrap').style.display = 'none';
+      kMsg(e.message);
+    }
+  };
+  kPollTimer = setInterval(tick, 3000);
+  tick();
+}
+
+document.getElementById('kCancelBtn').addEventListener('click', async () => {
+  if (!kCurrentJob) return;
+  try { await kFetch(`/jobs/${kCurrentJob}/cancel`, { method: 'POST' }); kMsg('중지 요청을 보냈습니다…'); } catch (e) { kMsg(e.message); }
+});
+
+document.getElementById('kBlogTestBtn').addEventListener('click', async (ev) => {
+  const blog = document.getElementById('kBlog').value.trim();
+  if (!blog) { kMsg('블로그 주소나 아이디를 입력해주세요.'); return; }
+  kBusy(ev.target, true, true); kMsg('블로그 글 1건을 읽고 정리해보는 중… (30초 정도 걸립니다)'); kOut('');
+  try {
+    const r = await kFetch('/blog/test', { method: 'POST', body: JSON.stringify({ blog }) });
+    if (!r.ok) { kMsg(r.message || '시험에 실패했습니다.'); kOut((r.titles || []).join('\n')); }
+    else {
+      kMsg(`성공: 글 목록 ${r.listed}건을 읽었고, 첫 글 「${r.sample.title}」(${r.sample.chars}자)에서 노트 ${r.notes.length}개를 만들었습니다. 아래 정리 결과가 괜찮으면 "학습 시작"을 누르세요. (이 시험은 저장되지 않았습니다)`);
+      kOut(r.notes.map((n, i) => `[${i + 1}] ${n.topic} (${n.type})\n${n.content}`).join('\n\n') || '보험 실무 관련 내용을 찾지 못했습니다.');
+    }
+  } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
+});
+
+document.getElementById('kBlogStartBtn').addEventListener('click', async (ev) => {
+  const blog = document.getElementById('kBlog').value.trim();
+  if (!blog) { kMsg('블로그 주소나 아이디를 입력해주세요.'); return; }
+  kBusy(ev.target, true, true); kOut('');
+  try {
+    const r = await kFetch('/blog/start', { method: 'POST', body: JSON.stringify({
+      blog, sourceName: document.getElementById('kBlogName').value.trim() || undefined,
+      maxPosts: Number(document.getElementById('kBlogMax').value) || 100 }) });
+    kPoll(r.jobId);
+  } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
+});
+
+document.getElementById('kYtBtn').addEventListener('click', async (ev) => {
+  const url = document.getElementById('kYtUrl').value.trim();
+  if (!url) { kMsg('유튜브 영상 주소를 입력해주세요.'); return; }
+  kBusy(ev.target, true, true); kMsg('영상을 읽고 정리하는 중… (1분 정도 걸릴 수 있습니다)'); kOut('');
+  try {
+    const r = await kFetch('/youtube', { method: 'POST', body: JSON.stringify({
+      url, sourceName: document.getElementById('kYtName').value.trim() || '유튜브',
+      title: document.getElementById('kYtTitle').value.trim() || undefined,
+      transcript: document.getElementById('kYtText').value.trim() || undefined }) });
+    if (r.needTranscript) { kMsg(r.message); }
+    else if (r.skipped) { kMsg(r.reason || '건너뛰었습니다.'); }
+    else { kMsg(`학습했습니다. 노트 ${r.saved}개를 만들었습니다.`); kOut((r.notes || []).map((n, i) => `[${i + 1}] ${n.topic} (${n.type})\n${n.content}`).join('\n\n')); document.getElementById('kYtText').value = ''; renderKnowledge(); }
+  } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
+});
+
+document.getElementById('kPdfBtn').addEventListener('click', async (ev) => {
+  const name = document.getElementById('kPdfName').value.trim();
+  const file = document.getElementById('kPdfFile').files[0];
+  if (!name || !file) { kMsg('자료 이름과 PDF 파일을 선택해주세요.'); return; }
+  const form = new FormData();
+  form.append('file', file); form.append('sourceName', name);
+  form.append('mode', document.getElementById('kPdfMode').value);
+  form.append('notice', document.getElementById('kPdfNotice').value.trim());
+  kBusy(ev.target, true, true); kMsg('파일을 올리고 글자를 읽는 중…'); kOut('');
+  try {
+    const r = await kFetch('/pdf', { method: 'POST', body: form });
+    if (r.jobId) {
+      kMsg(r.notice ? `사용 제한 문구가 자동 설정되었습니다: ${r.notice}` : '');
+      kPoll(r.jobId);
+    } else {
+      kMsg(`학습했습니다. ${r.saved != null ? `(${r.saved}개 저장)` : ''}${r.notice ? ' 사용 제한 문구: ' + r.notice : ''}`);
+      document.getElementById('kPdfFile').value = '';
+      renderKnowledge();
+    }
+  } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
+});
+
+document.getElementById('kTxBtn').addEventListener('click', async (ev) => {
+  const sourceName = document.getElementById('kTxName').value.trim();
+  const title = document.getElementById('kTxTitle').value.trim();
+  const content = document.getElementById('kTxText').value.trim();
+  if (!sourceName || !title || content.length < 100) { kMsg('자료 이름, 제목, 내용(100자 이상)을 입력해주세요.'); return; }
+  kBusy(ev.target, true, true); kMsg('읽고 정리하는 중…'); kOut('');
+  try {
+    const r = await kFetch('/text', { method: 'POST', body: JSON.stringify({ sourceName, title, url: document.getElementById('kTxUrl').value.trim() || undefined, content }) });
+    if (r.skipped) kMsg(r.reason);
+    else { kMsg(`학습했습니다. 노트 ${r.saved}개를 만들었습니다.`); kOut((r.notes || []).map((n, i) => `[${i + 1}] ${n.topic} (${n.type})\n${n.content}`).join('\n\n')); document.getElementById('kTxText').value = ''; renderKnowledge(); }
+  } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
+});
+
+document.getElementById('kTermsBtn').addEventListener('click', async (ev) => {
+  const files = Array.from(document.getElementById('kTermsFiles').files || []);
+  if (!files.length) { kMsg('약관 PDF 파일을 선택해주세요. (여러 개 선택 가능)'); return; }
+  const cat = document.getElementById('kTermsCat').value;
+  const sourceName = `약관 · ${cat}`;
+  kBusy(ev.target, true, true); kOut('');
+  const log = []; let ok = 0, skip = 0, fail = 0, pages = 0;
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const title = f.name.replace(/\.pdf$/i, '');
+    kMsg(`(${i + 1}/${files.length}) 올리는 중: ${title} — 창을 닫지 마세요`);
+    if (f.size > 40 * 1024 * 1024) { fail++; log.push(`실패: ${f.name} (40MB 초과)`); kOut(log.join('\n')); continue; }
+    const form = new FormData();
+    form.append('file', f); form.append('sourceName', sourceName); form.append('title', title);
+    form.append('mode', 'data'); form.append('docType', 'terms'); form.append('skipExisting', '1');
+    try {
+      const isNet = (m) => /Failed to fetch|NetworkError|Load failed/i.test(m || '');
+      let r;
+      for (let attempt = 1; ; attempt++) {
+        try { r = await kFetch('/pdf', { method: 'POST', body: form }); break; }
+        catch (e) {
+          // 서버가 재시작 중이거나 연결이 끊긴 경우: 30초 간격으로 최대 3번 다시 시도
+          if (isNet(e.message) && attempt < 4) {
+            kMsg(`(${i + 1}/${files.length}) 서버 연결이 끊겼습니다. 30초 뒤 다시 시도합니다 (${attempt}/3)…`);
+            await new Promise(res => setTimeout(res, 30000)); continue;
+          }
+          throw e;
+        }
+      }
+      if (r.skipped) { skip++; log.push(`건너뜀: ${title} (${r.reason || '이미 올림'})`); }
+      else if (r.jobId) {
+        // 서버가 파일을 받았고, 안에서 처리 중입니다. 끝날 때까지 3초마다 진행 상황을 확인합니다.
+        let j = null, netFail = 0;
+        for (let t = 0; t < 600; t++) {
+          await new Promise(res => setTimeout(res, 3000));
+          try {
+            j = await kFetch('/jobs/' + r.jobId); netFail = 0;
+            kMsg(`(${i + 1}/${files.length}) ${title} — 처리 중 ${j.done || 0}/${j.total || '?'} 조각 · 창을 닫지 마세요`);
+            if (j.status === 'done' || j.status === 'error') break;
+          } catch (e) {
+            if (/찾을 수 없/.test(e.message)) { j = { status: 'error', message: '서버가 다시 시작되어 작업이 중단되었습니다. 같은 파일을 다시 올려 주세요.' }; break; }
+            if (++netFail >= 20) { j = { status: 'error', message: '서버와 연결이 계속 끊겼습니다.' }; break; }
+          }
+        }
+        if (j && j.status === 'done') { ok++; pages += r.pages || 0; log.push(`완료: ${title} (${r.pages}쪽)`); }
+        else { fail++; log.push(`실패: ${title} (${(j && j.message) || '시간 초과'})`); }
+      }
+      else { ok++; pages += r.pages || 0; log.push(`완료: ${title} (${r.pages}쪽)`); }
+    } catch (e) {
+      fail++;
+      log.push(`실패: ${title} (${/Failed to fetch|NetworkError|Load failed/i.test(e.message) ? '서버와 연결이 계속 끊김 — Railway 로그 확인 필요' : e.message})`);
+    }
+    kOut(log.slice(-40).join('\n'));
+  }
+  kMsg(`끝났습니다. 새로 ${ok}개(${pages}쪽) · 건너뜀 ${skip}개 · 실패 ${fail}개`);
+  document.getElementById('kTermsFiles').value = '';
+  kBusy(ev.target, false);
+  renderKnowledge();
+});
+
+document.getElementById('kProbeBtn').addEventListener('click', async (ev) => {
+  const urls = document.getElementById('kProbeUrls').value.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!urls.length) { kMsg('주소를 입력해주세요.'); return; }
+  kBusy(ev.target, true, true); kMsg('접속 시험 중… (주소당 최대 15초)'); kOut('');
+  try {
+    const items = (await kFetch('/probe', { method: 'POST', body: JSON.stringify({ urls }) })).items || [];
+    kMsg('');
+    kOut(items.map(x => x.note ? `[실패] ${x.url}\n  ${x.note}`
+      : `[${x.ok ? '열림' : '막힘/실패'}] HTTP ${x.status || 0} · ${(x.ms / 1000).toFixed(1)}초 · ${x.chars}자${x.error ? ' · ' + x.error : ''}\n  ${x.url}\n  PDF링크 ${x.pdfLinks}개${x.pdf ? ' · 파일이 PDF임' : ''}${x.hints.length ? ' · 감지: ' + x.hints.join(',') : ''}\n  ${x.preview}`).join('\n\n'));
+  } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
+});
+
+document.getElementById('kLinksBtn').addEventListener('click', async (ev) => {
+  const url = document.getElementById('kProbeUrls').value.split('\n').map(s => s.trim()).filter(Boolean)[0];
+  if (!url) { kMsg('주소를 입력해주세요.'); return; }
+  kBusy(ev.target, true, true); kMsg('링크를 읽는 중…'); kOut('');
+  try {
+    const x = ((await kFetch('/probe', { method: 'POST', body: JSON.stringify({ urls: [url], links: true }) })).items || [])[0] || {};
+    kMsg('');
+    const fmt = l => `${l.text || '(글자없음)'} → ${l.href}${l.onclick ? ' | ' + l.onclick : ''}`;
+    const F = (x.fileLike || []).map(fmt);
+    const L = (x.links || []).map(fmt);
+    kOut(`${x.url} · HTTP ${x.status} · ${x.chars}자 · 이 화면 고유 링크 ${L.length}개${x.commonRemoved ? '(공통 메뉴 제외)' : ''}\n\n[파일·약관 관련 후보 ${F.length}개]\n` + F.join('\n') + '\n\n[전체 링크]\n' + L.join('\n') + '\n\n[요청 주소 후보]\n' + (x.endpoints || []).join('\n') + `\n\n[화면 글자 미리보기]\n${x.preview || ''}`);
+  } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
+});
+
+
+const K_COMPANIES = [{"name": "삼성생명", "url": "https://www.samsunglife.com/individual/products/disclosure/sales/PDO-PRPRI010110M"}, {"name": "한화생명", "url": "https://www.hanwhalife.com/index.jsp"}, {"name": "교보생명", "url": "https://www.kyobo.com/dgt/web/product-official/all-product/search"}, {"name": "DB생명", "url": "https://www.idblife.com/notice/product/sale"}, {"name": "KB라이프생명", "url": "https://www.kblife.co.kr/customer-common/productList.do"}, {"name": "KDB생명", "url": "https://www.kdblife.co.kr/ajax.do?scrId=HDLMA002M02P"}, {"name": "흥국생명", "url": "https://www.heungkuklife.co.kr/front/public/saleProduct.do?searchFlgSale=Y"}, {"name": "동양생명", "url": "https://pbano.myangel.co.kr/paging/WE_AC_WEPAAP020100L"}, {"name": "ABL생명", "url": "https://www.abllife.co.kr/st/pban/prdtPban/whlPrdt?page=1261783_1260"}, {"name": "라이나생명", "url": "https://www.lina.co.kr/disclosure/product-public-announcement/product-on-sales?key=0"}, {"name": "하나생명", "url": "https://hanalife.co.kr/anm/product/allProduct.do?status=on"}, {"name": "IBK생명", "url": "https://www.ibki.co.kr/process/HP_PBANO_PDT_SP_INDV"}, {"name": "iM라이프생명", "url": "https://www.imlifeins.co.kr/BA/BA_A020.do"}, {"name": "메트라이프생명", "url": "https://brand.metlife.co.kr/pn/mcvrgProd/retrieveMcvrgProdMain.do"}, {"name": "미래에셋생명", "url": "https://life.miraeasset.com/micro/disclosure/product/PC-HO-080301-000000.do"}, {"name": "농협생명", "url": "https://www.nhlife.co.kr/ho/on/HOON0004M00.nhl"}, {"name": "신한라이프", "url": "https://www.shinhanlife.co.kr/hp/cdhi0030.do"}, {"name": "처브라이프", "url": "https://www.chubblife.co.kr/front/official/sale/listSale.do"}, {"name": "푸본현대생명", "url": "https://www.fubonhyundai.com/"}, {"name": "AIA생명", "url": "https://mypage.aia.co.kr/AIAHomepage/disclosure/our-products/selling/individual.do"}, {"name": "메리츠화재", "url": "https://www.meritzfire.com/disclosure/product-announcement/product-list.do"}, {"name": "KB손해보험", "url": "https://www.kbinsure.co.kr/CG802030001.ec"}, {"name": "현대해상", "url": "https://www.hi.co.kr/serviceAction.do"}, {"name": "DB손해보험", "url": "https://www.idbins.com/FWMAIV1534.do"}, {"name": "흥국화재", "url": "https://www.heungkukfire.co.kr/FRW/announce/insGoodsGongsiSale.do"}, {"name": "하나손해보험", "url": "https://www.hanainsure.co.kr/w/disclosure/product/saleProduct"}, {"name": "농협손해보험", "url": "https://www.nhfire.co.kr/announce/productAnnounce/retrieveInsuranceProductsAnnounce.nhfire"}, {"name": "삼성화재", "url": "https://www.samsungfire.com/vh/page/VH.HPIF0103.do"}, {"name": "롯데손해보험", "url": "https://www.lotteins.co.kr/index2.jsp"}, {"name": "AIG손해보험", "url": "https://www.aig.co.kr/wp/dpwpm018.jsp?prodAlias=allcarecisi&prodCd=L0542&menuId=MS1190"}, {"name": "한화손해보험", "url": "https://www.hwgeneralins.com/notice/ir/product-ing01.do"}];
+const K_OPEN = ['삼성생명','교보생명','KB라이프생명','KDB생명','흥국생명','동양생명','ABL생명','라이나생명','IBK생명','메트라이프생명','미래에셋생명','신한라이프','처브라이프','AIA생명','메리츠화재','KB손해보험','DB손해보험','흥국화재','하나손해보험','농협손해보험','삼성화재','롯데손해보험','AIG손해보험','한화손해보험'];
+document.getElementById('kDiag2Btn').addEventListener('click', async (ev) => {
+  kBusy(ev.target, true, true); kOut(''); kMsg('정밀 점검 중입니다… (약 3~5분)');
+  try {
+    const list = K_COMPANIES.filter(c => K_OPEN.indexOf(c.name) >= 0);
+    const st = await kFetch('/diagnose', { method: 'POST', body: JSON.stringify({ companies: list, detail: true }) });
+    let job = {};
+    for (let i = 0; i < 400; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      try { job = await kFetch('/jobs/' + st.jobId); } catch (e) { kMsg('연결 확인 중… ' + e.message); continue; }
+      kMsg('점검 중 ' + (job.done || 0) + '/' + (job.total || list.length));
+      if (job.status === 'done' || job.status === 'cancelled') break;
+    }
+    kMsg('');
+    kOut((job.results || []).map(x => '■ ' + x.name + ' · ' + x.verdict + '\n' + (x.files && x.files.length ? '파일후보:\n  ' + x.files.join('\n  ') + '\n' : '') + (x.pdfUrls && x.pdfUrls.length ? 'PDF주소:\n  ' + x.pdfUrls.join('\n  ') + '\n' : '') + (x.endpointList && x.endpointList.length ? '요청주소:\n  ' + x.endpointList.join('\n  ') + '\n' : '') + (x.apiHints && x.apiHints.length ? 'API후보:\n  ' + x.apiHints.join('\n  ') + '\n' : '') + (x.scripts && x.scripts.length ? '스크립트:\n  ' + x.scripts.join('\n  ') + '\n' : '')).join('\n'));
+  } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
+});
+document.getElementById('kDiagBtn').addEventListener('click', async (ev) => {
+  kBusy(ev.target, true, true); kOut(''); kMsg('보험사 공시실을 점검 중입니다… (약 3~6분)');
+  try {
+    const st = await kFetch('/diagnose', { method: 'POST', body: JSON.stringify({ companies: K_COMPANIES }) });
+    let job = {};
+    for (let i = 0; i < 400; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      try { job = await kFetch('/jobs/' + st.jobId); } catch (e) { kMsg('연결 확인 중… ' + e.message); continue; }
+      kMsg('점검 중 ' + (job.done || 0) + '/' + (job.total || K_COMPANIES.length));
+      if (job.status === 'done' || job.status === 'cancelled') break;
+    }
+    const R = job.results || [];
+    kMsg('');
+    kOut(R.map(x => '[' + x.verdict + '] ' + x.name + ' · HTTP ' + (x.status || 0) + ' · ' + x.chars + '자(본문 ' + (x.textLen || 0) + ') · PDF ' + (x.pdfLinks || 0) + ' · 파일후보 ' + (x.fileLike || 0) + ' · 링크 ' + (x.links || 0) + ' · 요청주소 ' + (x.endpoints || 0) + (x.error ? ' · ' + x.error : '') + (x.hints && x.hints.length ? ' · 감지:' + x.hints.join(',') : '') + (x.sample && x.sample.length ? '\n    ' + x.sample.join('\n    ') : '')).join('\n'));
+  } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
+});
+
+document.getElementById('kSearchBtn').addEventListener('click', async (ev) => {
+  const q = document.getElementById('kSearchQ').value.trim();
+  if (!q) { kMsg('찾아볼 질문을 입력해주세요.'); return; }
+  kBusy(ev.target, true, true); kMsg('');
+  try {
+    const items = (await kFetch('/search?q=' + encodeURIComponent(q))).items || [];
+    kOut(items.length ? items.map((x, i) => `[${i + 1}] 유사도 ${x.score} · ${x.source}\n${x.topic || x.title}\n${x.preview}…`).join('\n\n') : '관련된 학습 내용을 찾지 못했습니다.');
+  } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
+});
+
+/* ---- 보상사례 관리 ---- */
+async function renderAdminClaims() {
+  const listEl = document.getElementById('claimList');
+  const emptyEl = document.getElementById('claimEmpty');
+  listEl.innerHTML = '';
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/claims`, { headers: authHeaders() });
+    if (!res.ok) throw new Error('조회 실패');
+    const data = await res.json();
+    const items = data.items || [];
+    if (items.length === 0) { emptyEl.style.display = 'block'; return; }
+    emptyEl.style.display = 'none';
+    items.forEach(row => {
+      const card = document.createElement('div');
+      card.className = 'admin-item-card';
+      card.innerHTML = `
+        <div class="title">${row.case_title}</div>
+        <div class="body">${row.summary}\n지급 범위: ${row.range_desc}${row.note ? '\n유의사항: ' + row.note : ''}</div>
+        <div class="admin-actions"></div>
+      `;
+      const actions = card.querySelector('.admin-actions');
+      const delBtn = document.createElement('button');
+      delBtn.className = 'admin-btn delete';
+      delBtn.textContent = '삭제';
+      delBtn.onclick = () => adminDeleteClaim(row.id);
+      actions.appendChild(delBtn);
+      listEl.appendChild(card);
+    });
+  } catch (err) {
+    emptyEl.style.display = 'block';
+    emptyEl.textContent = '보상사례 목록을 불러오지 못했습니다.';
+  }
+}
+
+document.getElementById('claimAddBtn').addEventListener('click', async () => {
+  const caseTitle = document.getElementById('claimTitle').value.trim();
+  const summary = document.getElementById('claimSummary').value.trim();
+  const rangeDesc = document.getElementById('claimRange').value.trim();
+  const note = document.getElementById('claimNote').value.trim();
+  const msgEl = document.getElementById('claimMsg');
+  if (!caseTitle || !summary || !rangeDesc) { msgEl.textContent = '사례 제목·요약·지급 범위는 필수입니다.'; return; }
+  msgEl.textContent = '등록 중…';
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/claims`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ caseTitle, summary, rangeDesc, note })
+    });
+    if (!res.ok) throw new Error('등록 실패');
+    ['claimTitle','claimSummary','claimRange','claimNote'].forEach(id => document.getElementById(id).value = '');
+    msgEl.textContent = '등록되었습니다.';
+    renderAdminClaims();
+    loadContentFromServer();
+  } catch (err) {
+    msgEl.textContent = '등록에 실패했습니다. 잠시 후 다시 시도해주세요.';
+  }
+});
+
+async function adminDeleteClaim(id) {
+  if (!confirm('이 보상사례를 삭제하시겠습니까?')) return;
+  await fetch(`${API_BASE}/api/admin/claims/${id}`, { method: 'DELETE', headers: authHeaders() });
+  renderAdminClaims();
+  loadContentFromServer();
+}
+
+// 시작 시: 토큰이 있으면 로그인 화면 건너뛰기, 없으면 로그인 화면 표시
+if (!API_BASE) {
+  // 서버가 아직 없으면 로그인 화면을 보여주되, 둘러보기 버튼으로 바로 진행 가능
+  showLoginScreen();
+} else if (AUTH_TOKEN) {
+  hideLoginScreen();
+  afterAuthReady();
+} else {
+  showLoginScreen();
+}
+
+/* ---------- 지사 목록: 회원가입 화면 선택용 (로그인 없이 조회) ---------- */
+async function loadBranchesForRegister() {
+  const sel = document.getElementById('regBranch');
+  if (!API_BASE) {
+    sel.innerHTML = '<option value="">서버 연결 전 (둘러보기로 이용해주세요)</option>';
+    return;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/branches`);
+    if (!res.ok) throw new Error('지사 목록 조회 실패');
+    const data = await res.json();
+    const items = data.items || [];
+    if (items.length === 0) {
+      sel.innerHTML = '<option value="">등록된 지사가 없습니다 (관리자에게 문의)</option>';
+      return;
+    }
+    sel.innerHTML = '<option value="">소속 지사 선택</option>' +
+      items.map(b => `<option value="${b.id}">${b.name}</option>`).join('');
+  } catch (err) {
+    sel.innerHTML = '<option value="">지사 목록을 불러오지 못했습니다</option>';
+  }
+}
+loadBranchesForRegister();
+
+/* ---------- 일정: 카테고리별 CRUD (서버 연동 + 둘러보기 폴백) ---------- */
+const SCHEDULE_CATEGORIES = ['미팅', '계약', '방문', '개인', '기타'];
+
+async function loadScheduleFromServer() {
+  if (GUEST_MODE || !API_BASE) { renderSchedule(); return; }
+  try {
+    const res = await fetch(`${API_BASE}/api/schedule`, { headers: authHeaders() });
+    if (!res.ok) throw new Error('일정 조회 실패');
+    const data = await res.json();
+    SCHEDULE_DB = (data.items || []).map(row => ({
+      id: row.id, time: row.time_label, title: row.title,
+      meta: row.memo || '', category: row.category || '기타'
+    }));
+  } catch (err) {
+    addMsg('system', '⚠️ 서버에서 일정을 불러오지 못했습니다. 임시로 로컬 데이터로 표시합니다.');
+  }
+  renderSchedule();
+}
+
+async function addScheduleItem(title, time, category, meta) {
+  if (GUEST_MODE || !API_BASE) {
+    SCHEDULE_DB.push({ title, time: time || '시간 미지정', category: category || '기타', meta: meta || '직접 등록' });
+    renderSchedule();
+    return;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/schedule`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ title, timeLabel: time || '시간 미지정', category: category || '기타', memo: meta || '' })
+    });
+    if (!res.ok) throw new Error('일정 저장 실패');
+    await loadScheduleFromServer();
+  } catch (err) {
+    addMsg('system', '⚠️ 서버 저장에 실패해 이번 일정은 브라우저에만 임시 저장됩니다.');
+    SCHEDULE_DB.push({ title, time: time || '시간 미지정', category: category || '기타', meta: meta || '직접 등록' });
+    renderSchedule();
+  }
+}
+
+async function deleteScheduleItem(id, indexFallback) {
+  if (GUEST_MODE || !API_BASE || id === undefined) {
+    SCHEDULE_DB.splice(indexFallback, 1);
+    renderSchedule();
+    return;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/schedule/${id}`, { method: 'DELETE', headers: authHeaders() });
+    if (!res.ok) throw new Error('일정 삭제 실패');
+    await loadScheduleFromServer();
+  } catch (err) {
+    addMsg('system', '⚠️ 일정 삭제에 실패했습니다. 잠시 후 다시 시도해주세요.');
+  }
+}
+
+document.getElementById('schedAddBtn').addEventListener('click', () => {
+  const title = document.getElementById('schedTitleInput').value.trim();
+  const time = document.getElementById('schedTimeInput').value.trim();
+  const category = document.getElementById('schedCategoryInput').value;
+  if (!title) { alert('일정 제목을 입력해주세요.'); return; }
+  addScheduleItem(title, time, category, '직접 등록');
+  document.getElementById('schedTitleInput').value = '';
+  document.getElementById('schedTimeInput').value = '';
+});
+
+async function toggleAudioRecording() {
+  if (!isRecordingAudio) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        stopMicWave();
+        const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+        setStatus('thinking', '음성을 처리하는 중…');
+        const text = await transcribeAudio(blob);
+        if (text) { routeAndAnswer(text); }
+        else { setStatus(null, '무엇을 도와드릴까요?'); }
+      };
+      mediaRecorder.start();
+      isRecordingAudio = true;
+      micBtn.classList.add('active');
+      setStatus('listening', '듣고 있어요… (다시 누르면 종료)');
+      // 이미 열어둔 녹음용 스트림을 그대로 파형 분석에도 재사용합니다.
+      startMicWave(stream);
+    } catch (err) {
+      addMsg('system', '마이크 권한이 필요합니다. 브라우저 설정에서 마이크 접근을 허용해 주세요.');
+    }
+  } else {
+    mediaRecorder.stop();
+    isRecordingAudio = false;
+    micBtn.classList.remove('active');
+  }
+}
+
+// (마이크 클릭 처리는 연속 대화 모드 토글로 위쪽에서 한 번만 등록합니다 — 중복 등록 제거)
+
+/* 음성 출력 (TTS) — iOS 사파리도 자체적으로 지원합니다 */
+// 답변을 소리로 읽어줍니다. 서버(OpenAI TTS)를 우선 사용합니다 — 카카오톡
+// 인앱 브라우저 등 브라우저 자체 음성합성이 안 되는 환경에서도 항상 동일하게
+// 소리가 납니다. 서버 호출이 실패할 때만 브라우저 자체 음성으로 대체합니다.
+async function speak(text, onEnd) {
+  const finish = () => { stopSpeakingWave(); onEnd && onEnd(); };
+  if (!text || !text.trim()) { finish(); return; }
+
+  if (currentSpeechAudio) {
+    try { currentSpeechAudio.pause(); } catch (e) {}
+    currentSpeechAudio = null;
+  }
+
+  if (API_BASE) {
+    try {
+      const res = await fetch(`${API_BASE}/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice: selectedOpenAIVoice }),
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        currentSpeechAudio = audio;
+        audio.onplay = () => startSpeakingWave();
+        audio.onended = () => { URL.revokeObjectURL(url); finish(); };
+        audio.onerror = () => { URL.revokeObjectURL(url); speakWithBrowserTTS(text, finish); };
+        await audio.play().catch(() => speakWithBrowserTTS(text, finish));
+        return;
+      }
+    } catch (err) {
+      // 서버 TTS 호출 자체가 실패한 경우 아래 브라우저 자체 음성으로 대체
+    }
+  }
+  speakWithBrowserTTS(text, finish);
+}
+
+function speakWithBrowserTTS(text, finish) {
+  if (!window.speechSynthesis) { finish(); return; }
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = 'ko-KR';
+  utter.rate = 1.02;
+  if (selectedVoiceURI) {
+    const v = window.speechSynthesis.getVoices().find(v => v.voiceURI === selectedVoiceURI);
+    if (v) { utter.voice = v; utter.lang = v.lang; }
+  }
+  utter.onstart = () => startSpeakingWave();
+  utter.onend = finish;
+  utter.onerror = finish;
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(utter);
+}
+
+/* ============================================================
+   일정 패널
+============================================================ */
+function renderScheduleCatFilter() {
+  const wrap = document.getElementById('schedCatFilter');
+  const cats = ['전체', ...SCHEDULE_CATEGORIES];
+  wrap.innerHTML = cats.map(c =>
+    `<div class="sched-cat-chip${c === ACTIVE_CATEGORY ? ' active' : ''}" data-cat="${c}">${c}</div>`
+  ).join('');
+  wrap.querySelectorAll('.sched-cat-chip').forEach(chip => {
+    chip.addEventListener('click', () => { ACTIVE_CATEGORY = chip.dataset.cat; renderSchedule(); });
+  });
+}
+
+function renderSchedule() {
+  renderScheduleCatFilter();
+  const list = document.getElementById('scheduleList');
+  const empty = document.getElementById('scheduleEmpty');
+  list.innerHTML = '';
+  const filtered = ACTIVE_CATEGORY === '전체'
+    ? SCHEDULE_DB
+    : SCHEDULE_DB.filter(item => (item.category || '기타') === ACTIVE_CATEGORY);
+  if (filtered.length === 0) { empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+  filtered.forEach((item) => {
+    const realIndex = SCHEDULE_DB.indexOf(item);
+    const div = document.createElement('div');
+    div.className = 'card';
+    div.innerHTML = `
+      <div class="cat-badge">${escapeHtml(item.category || '기타')}</div>
+      <div class="time">${escapeHtml(item.time)}</div>
+      <div class="title">${escapeHtml(item.title)}</div>
+      <div class="meta">${escapeHtml(item.meta || '')}</div>
+      <button class="remind-btn" onclick="testRemind('${escapeHtml(item.title)}')">1시간 전 알림 테스트</button>
+      <button class="del-btn" onclick="deleteScheduleItem(${item.id !== undefined ? item.id : 'undefined'}, ${realIndex})">삭제</button>
+    `;
+    list.appendChild(div);
+  });
+}
+function testRemind(title) {
+  alert('🔔 알림: "' + title + '" 일정이 1시간 뒤입니다.\n(실제 서비스에서는 푸시 알림 / 알림톡으로 발송됩니다)');
+}
+
+/* ============================================================
+   미디어 패널
+============================================================ */
+function renderMedia() {
+  const grid = document.getElementById('mediaGrid');
+  grid.innerHTML = '';
+  MEDIA_DB.forEach(m => {
+    const div = document.createElement('div');
+    div.className = 'media-card';
+    div.innerHTML = `
+      <div class="media-thumb">▶ ${escapeHtml(m.length)}</div>
+      <div class="media-body">
+        <div class="media-title">${escapeHtml(m.title)}</div>
+        <div>${m.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('')}</div>
+      </div>
+    `;
+    div.addEventListener('click', () => openPlayer(m));
+    grid.appendChild(div);
+  });
+}
+function openPlayer(m) {
+  document.getElementById('playerTitle').textContent = m.title;
+  document.getElementById('playerThumb').textContent = '▶ ' + m.title;
+  document.getElementById('player').classList.add('open');
+}
+function closePlayer() {
+  document.getElementById('player').classList.remove('open');
+}
+
+/* ============================================================
+   3D 아바타 렌더러 (Three.js) — 지원 안 되는 환경은 평면 아이콘으로 대체
+============================================================ */
+let three3d = null;
+
+function initThree() {
+  if (typeof THREE === 'undefined') return false;
+  try {
+    const canvas = document.getElementById('avatar3d');
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(300, 300, false);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(26, 1, 0.1, 50);
+    camera.position.set(0, 0.1, 7.8);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const key = new THREE.DirectionalLight(0xfff2dc, 1.15);
+    key.position.set(3, 4, 6);
+    scene.add(key);
+    const rim = new THREE.DirectionalLight(0xc6a15b, 0.55);
+    rim.position.set(-4, 1.5, -3);
+    scene.add(rim);
+
+    const group = new THREE.Group();
+    scene.add(group);
+
+    three3d = { renderer, scene, camera, group, parts: {}, mode: 'head' };
+    animateThree();
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function clearGroup() {
+  while (three3d.group.children.length) {
+    const c = three3d.group.children[0];
+    three3d.group.remove(c);
+  }
+}
+
+function buildHeadFor(cfg) {
+  clearGroup();
+  three3d.mode = 'head';
+
+  const skinMat = new THREE.MeshStandardMaterial({ color: cfg.skin, roughness: 0.55, metalness: 0.03 });
+  const hairMat = new THREE.MeshStandardMaterial({ color: cfg.hair, roughness: 0.5, metalness: 0.05 });
+  const clothMat = new THREE.MeshStandardMaterial({ color: cfg.cloth, roughness: 0.7, metalness: 0.05 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x20263a, roughness: 0.4 });
+
+  const shoulders = new THREE.Mesh(new THREE.CylinderGeometry(2.3, 2.9, 2.0, 24, 1, true, 0, Math.PI), clothMat);
+  shoulders.rotation.z = Math.PI;
+  shoulders.position.set(0, -2.7, 0);
+  three3d.group.add(shoulders);
+
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.65, 0.8, 16), skinMat);
+  neck.position.set(0, -1.55, 0);
+  three3d.group.add(neck);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(1.55, 40, 32), skinMat);
+  head.scale.set(0.92, 1.04, 0.92);
+  three3d.group.add(head);
+
+  if (cfg.hairStyle === 'bob') {
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(1.66, 32, 24, 0, Math.PI * 2, 0, Math.PI * 0.62), hairMat);
+    cap.position.set(0, 0.32, 0);
+    three3d.group.add(cap);
+    const sideL = new THREE.Mesh(new THREE.SphereGeometry(0.55, 16, 16), hairMat);
+    sideL.position.set(-1.5, -0.5, 0.1);
+    three3d.group.add(sideL);
+    const sideR = sideL.clone(); sideR.position.x = 1.5;
+    three3d.group.add(sideR);
+  } else if (cfg.hairStyle === 'long') {
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(1.68, 32, 24, 0, Math.PI * 2, 0, Math.PI * 0.6), hairMat);
+    cap.position.set(0, 0.35, 0);
+    three3d.group.add(cap);
+    const back = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 0.9, 2.6, 20, 1, true, Math.PI * 0.15, Math.PI * 1.7), hairMat);
+    back.position.set(0, -1.1, -0.3);
+    three3d.group.add(back);
+  } else if (cfg.hairStyle === 'short-suit') {
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(1.6, 32, 24, 0, Math.PI * 2, 0, Math.PI * 0.48), hairMat);
+    cap.position.set(0, 0.42, 0);
+    three3d.group.add(cap);
+  } else {
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(1.58, 32, 24, 0, Math.PI * 2, 0, Math.PI * 0.5), hairMat);
+    cap.position.set(0, 0.4, 0);
+    three3d.group.add(cap);
+  }
+
+  const eyeGeo = new THREE.SphereGeometry(0.13, 12, 12);
+  const eyeL = new THREE.Mesh(eyeGeo, darkMat); eyeL.position.set(-0.5, 0.05, 1.35);
+  const eyeR = new THREE.Mesh(eyeGeo, darkMat); eyeR.position.set(0.5, 0.05, 1.35);
+  three3d.group.add(eyeL, eyeR);
+
+  const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.09, 0.1), darkMat);
+  mouth.position.set(0, -0.75, 1.42);
+  three3d.group.add(mouth);
+
+  if (cfg.glasses) {
+    const ringGeo = new THREE.TorusGeometry(0.32, 0.045, 8, 20);
+    const gl = new THREE.Mesh(ringGeo, darkMat); gl.position.set(-0.5, 0.05, 1.5);
+    three3d.group.add(gl);
+    const gr = gl.clone(); gr.position.x = 0.5;
+    three3d.group.add(gr);
+    const bridge = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.04, 0.04), darkMat);
+    bridge.position.set(0, 0.05, 1.5);
+    three3d.group.add(bridge);
+  }
+
+  three3d.parts = { eyeL, eyeR, mouth };
+}
+
+function loadPhotoPlane(src) {
+  clearGroup();
+  three3d.mode = 'photo';
+  three3d.parts = {};
+  const loader = new THREE.TextureLoader();
+  loader.load(src, (tex) => {
+    tex.premultiplyAlpha = false;
+    const iw = tex.image.width, ih = tex.image.height;
+    const aspect = iw / ih;
+    const frameH = 3.9;              // 세로를 프레임에 꽉 채움 (인물이 크게 보이도록)
+    const planeH = frameH;
+    const planeW = frameH * aspect;
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, alphaTest: 0.08, side: THREE.DoubleSide });
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(planeW, planeH), mat);
+    plane.position.y = -0.15;
+    three3d.group.add(plane);
+  });
+}
+
+function animateThree() {
+  requestAnimationFrame(animateThree);
+  if (!three3d) return;
+  const t = performance.now() / 1000;
+
+  three3d.group.rotation.y = Math.sin(t * 0.5) * (three3d.mode === 'photo' ? 0.22 : 0.14);
+  three3d.group.rotation.x = Math.sin(t * 0.7) * 0.03;
+  three3d.group.position.y = Math.sin(t * 1.1) * 0.04;
+
+  if (three3d.mode === 'head' && three3d.parts.eyeL) {
+    const blinking = (t % 3.2) > 3.05;
+    const s = blinking ? 0.15 : 1;
+    three3d.parts.eyeL.scale.y = s;
+    three3d.parts.eyeR.scale.y = s;
+    three3d.parts.mouth.scale.y = (AVATAR_MODE === 'speaking') ? 1 + Math.abs(Math.sin(t * 11)) * 3.2 : 1;
+  }
+
+  const targetZ = AVATAR_MODE === 'listening' ? 7.3 : 7.8;
+  three3d.camera.position.z += (targetZ - three3d.camera.position.z) * 0.08;
+
+  three3d.renderer.render(three3d.scene, three3d.camera);
+}
+
+function applyAvatarToHeader() {
+  document.getElementById('avatarName').textContent = ASSISTANT_NAME || '담당 비서';
+
+  const preset = AVATAR_PRESETS.find(a => a.id === selectedAvatarId) || AVATAR_PRESETS[0];
+  const activeSrc = customAvatarSrc || preset.img;
+
+  if (typeof THREE === 'undefined' || (!three3d && !initThree())) {
+    const slot = document.getElementById('avatarFaceSlot');
+    slot.innerHTML = `<img class="avatar-photo" src="${activeSrc}">`;
+    return;
+  }
+
+  loadPhotoPlane(activeSrc);
+}
+
+function renderSettings() {
+  document.getElementById('nameField').value = ASSISTANT_NAME;
+
+  const grid = document.getElementById('avatarGrid');
+  const groups = [
+    { label: '로봇 아바타 선택', list: AVATAR_PRESETS }
+  ];
+  grid.innerHTML = groups.map(g => `
+    <div class="avatar-grid">
+      ${g.list.map(a => `
+        <div class="avatar-card${(!customAvatarSrc && a.id === selectedAvatarId) ? ' selected' : ''}" data-id="${a.id}">
+          <div class="thumb"><img src="${a.img}"></div>
+          <div class="label">${a.name}<small>${a.tagline}</small></div>
+        </div>
+      `).join('')}
+    </div>
+  `).join('');
+
+  if (customAvatarSrc) {
+    grid.innerHTML += `
+      <div class="avatar-group-label">내 캐릭터</div>
+      <div class="avatar-grid">
+        <div class="avatar-card selected"><div class="thumb"><img src="${customAvatarSrc}"></div><div class="label">업로드한 이미지<small>커스텀</small></div></div>
+      </div>`;
+  }
+
+  grid.querySelectorAll('.avatar-card[data-id]').forEach(card => {
+    card.addEventListener('click', () => {
+      const a = AVATAR_PRESETS.find(p => p.id === card.dataset.id);
+      selectedAvatarId = a.id;
+      customAvatarSrc = null;
+      const nameField = document.getElementById('nameField');
+      if (!nameField.value || AVATAR_PRESETS.some(p => p.name === nameField.value)) {
+        nameField.value = a.name;
+      }
+      renderSettings();
+    });
+  });
+
+  renderVoiceList();
+}
+
+document.getElementById('avatarUpload').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    customAvatarSrc = reader.result;
+    renderSettings();
+  };
+  reader.readAsDataURL(file);
+});
+
+// 실제 답변에 쓰이는 서버(OpenAI) 음성 중 하나를 고르는 목록입니다.
+// (기기/브라우저에 상관없이 항상 동일하게 들립니다 — 카카오톡 포함)
+const OPENAI_VOICES = [
+  { id: 'nova', label: '노바 — 여성, 밝고 또렷한 목소리 (기본)' },
+  { id: 'shimmer', label: '쉬머 — 여성, 부드러운 목소리' },
+  { id: 'alloy', label: '알로이 — 중성적인 목소리' },
+  { id: 'onyx', label: '오닉스 — 남성, 중저음' },
+  { id: 'echo', label: '에코 — 남성, 또렷한 목소리' },
+  { id: 'fable', label: '페이블 — 남성, 차분한 목소리' },
+];
+
+function renderVoiceList() {
+  const wrap = document.getElementById('voiceList');
+  const hint = document.getElementById('voiceHint');
+  hint.textContent = '실제 답변 음성에 사용할 목소리를 선택해주세요. 어떤 기기·브라우저(카카오톡 포함)에서도 동일하게 들립니다.';
+
+  wrap.innerHTML = '';
+  OPENAI_VOICES.forEach(v => {
+    const row = document.createElement('div');
+    row.className = 'voice-row' + (selectedOpenAIVoice === v.id ? ' selected' : '');
+    row.innerHTML = `
+      <label><input type="radio" name="voicePick" ${selectedOpenAIVoice === v.id ? 'checked' : ''}> ${escapeHtml(v.label)}</label>
+      <button class="preview-btn" type="button">미리듣기</button>
+    `;
+    row.querySelector('input').addEventListener('change', () => {
+      selectedOpenAIVoice = v.id;
+      try { localStorage.setItem('ttsVoice', v.id); } catch (e) {}
+      renderVoiceList();
+    });
+    row.querySelector('.preview-btn').addEventListener('click', async (ev) => {
+      const btn = ev.currentTarget;
+      const original = btn.textContent;
+      btn.disabled = true; btn.textContent = '재생 중…';
+      try {
+        const res = await fetch(`${API_BASE}/api/tts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: '안녕하세요, 담당 비서입니다. 무엇을 도와드릴까요?', voice: v.id }),
+        });
+        if (res.ok) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          audio.onended = () => URL.revokeObjectURL(url);
+          await audio.play();
+        }
+      } catch (e) { /* 미리듣기 실패는 조용히 무시 */ }
+      btn.disabled = false; btn.textContent = original;
+    });
+    wrap.appendChild(row);
+  });
+}
+
+document.getElementById('saveSettingsBtn').addEventListener('click', () => {
+  ASSISTANT_NAME = document.getElementById('nameField').value.trim() || '담당 비서';
+  applyAvatarToHeader();
+  document.querySelector('.tabbtn[data-tab="chat"]').click();
+  addMsg('system', `비서 설정이 저장되었습니다 — 이름: ${escapeHtml(ASSISTANT_NAME)}`);
+});
+
+applyAvatarToHeader();
+renderSchedule();
+renderMedia();
+</script>
+</body>
+</html>
