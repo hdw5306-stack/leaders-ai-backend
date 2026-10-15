@@ -164,41 +164,97 @@ function invalidateCache() { cache = null; }
 
 async function loadCache() {
   if (cache) return cache;
+  // 약관은 양이 방대해서 본문은 메모리에 올리지 않고(검색용 숫자만), 찾은 뒤에 필요한 것만 DB에서 읽습니다.
   const rows = (await pool.query(
-    `SELECT c.id, c.doc_id, c.topic, c.note_type, c.content, c.page, c.embedding,
-            d.title, d.url, d.source_name, d.source_type, d.notice
+    `SELECT c.id, c.doc_id, c.topic, c.note_type, CASE WHEN d.source_type = 'terms' THEN NULL ELSE c.content END AS content, c.page, c.embedding,
+            d.title, d.url, d.source_name, d.source_type, d.notice, d.company
      FROM knowledge_chunks c JOIN knowledge_docs d ON d.id = c.doc_id`
   )).rows;
   cache = {
     items: rows.map(r => ({
       id: r.id, docId: r.doc_id, topic: r.topic, noteType: r.note_type, content: r.content, page: r.page,
-      title: r.title, url: r.url, sourceName: r.source_name, sourceType: r.source_type, notice: r.notice,
+      title: r.title, url: r.url, sourceName: r.source_name, sourceType: r.source_type, notice: r.notice, company: r.company,
       vec: Float32Array.from(typeof r.embedding === 'string' ? JSON.parse(r.embedding) : r.embedding),
     })),
   };
   return cache;
 }
 
+// 질문 속 보험사 이름 찾기 ("삼성생명 암 면책" → 삼성생명). 길고 구체적인 이름부터 확인합니다.
+const COMPANY_ALIASES = [
+  ['삼성생명', ['삼성생명', '삼성 생명']], ['한화생명', ['한화생명']], ['교보생명', ['교보생명', '교보']], ['DB생명', ['db생명', '디비생명']],
+  ['KB라이프생명', ['kb라이프', '케이비라이프', 'kb 라이프']], ['KDB생명', ['kdb생명', '케이디비생명']], ['흥국생명', ['흥국생명']],
+  ['동양생명', ['동양생명']], ['ABL생명', ['abl생명', '에이비엘생명', 'abl']], ['라이나생명', ['라이나생명', '라이나']], ['하나생명', ['하나생명']],
+  ['카디프생명', ['카디프']], ['IBK생명', ['ibk생명', '아이비케이생명']], ['iM라이프생명', ['im라이프', '아이엠라이프', 'im생명']],
+  ['메트라이프생명', ['메트라이프']], ['미래에셋생명', ['미래에셋생명', '미래에셋']], ['농협생명', ['농협생명', 'nh농협생명']],
+  ['신한라이프', ['신한라이프', '신한생명']], ['처브라이프', ['처브라이프', '처브']], ['푸본현대생명', ['푸본현대', '푸본']], ['AIA생명', ['aia생명', 'aia', '에이아이에이']],
+  ['메리츠화재', ['메리츠화재', '메리츠']], ['KB손해보험', ['kb손해보험', 'kb손보', '케이비손해보험', 'kb손해']], ['현대해상', ['현대해상']],
+  ['DB손해보험', ['db손해보험', 'db손보', '디비손해보험', '디비손보']], ['흥국화재', ['흥국화재']], ['하나손해보험', ['하나손해보험', '하나손보']],
+  ['농협손해보험', ['농협손해보험', '농협손보', 'nh농협손해보험']], ['삼성화재', ['삼성화재']], ['롯데손해보험', ['롯데손해보험', '롯데손보']],
+  ['AIG손해보험', ['aig손해보험', 'aig손보', 'aig']], ['한화손해보험', ['한화손해보험', '한화손보']],
+];
+function detectCompany(text) {
+  const t = String(text || '').toLowerCase().replace(/\s+/g, ' ');
+  const nospace = t.replace(/\s/g, '');
+  let best = null;
+  for (const [name, aliases] of COMPANY_ALIASES) {
+    for (const a of aliases) {
+      const al = a.toLowerCase();
+      if (t.includes(al) || nospace.includes(al.replace(/\s/g, ''))) {
+        if (!best || al.length > best.len) best = { name, len: al.length };
+      }
+    }
+  }
+  return best ? best.name : null;
+}
+
 // 질문과 의미가 가까운 노트/페이지를 찾습니다.
-async function search(query, k = 6, minScore = 0.3) {
+async function search(query, k = 6, minScore = 0.3, opts = {}) {
   const { items } = await loadCache();
   if (!items.length || !query || !query.trim()) return [];
+  const company = opts.company || null;
   const [q] = await embedTexts([query]);
   const qv = Float32Array.from(q);
-  const scored = items.map(it => {
+  const scored = [];
+  for (const it of items) {
+    // 보험사가 지정된 질문이면, 약관은 그 보험사 것만 봅니다(다른 보험사 약관은 제외).
+    if (company && it.sourceType === 'terms' && it.company !== company) continue;
     let s = 0;
     for (let i = 0; i < qv.length; i++) s += qv[i] * it.vec[i];
-    return { it, score: s };
-  }).filter(x => x.score >= minScore).sort((a, b) => b.score - a.score);
+    if (s >= minScore) scored.push({ it, score: s });
+  }
+  scored.sort((a, b) => b.score - a.score);
   const perDoc = new Map();
   const picked = [];
-  for (const x of scored) {
-    const n = perDoc.get(x.it.docId) || 0;
-    if (n >= (x.it.sourceType === 'terms' ? 6 : 3)) continue; // 한 자료에서 3개까지만(다양하게). 약관은 한 파일이 방대해서 6개까지
-    perDoc.set(x.it.docId, n + 1);
+  const pickedIds = new Set();
+  const take = (x) => {
+    perDoc.set(x.it.docId, (perDoc.get(x.it.docId) || 0) + 1);
+    pickedIds.add(x.it.id);
     const { vec, ...rest } = x.it;
     picked.push({ ...rest, score: Number(x.score.toFixed(3)) });
+  };
+  // 1차: 한 자료에서 골고루(보험사 지정 약관은 상품당 2개, 그 외 약관 6개/기타 3개)
+  for (const x of scored) {
+    const cap = x.it.sourceType === 'terms' ? (company ? 2 : 6) : 3;
+    if ((perDoc.get(x.it.docId) || 0) >= cap) continue;
+    take(x);
     if (picked.length >= k) break;
+  }
+  // 2차: 보험사 지정인데 자리가 남으면(상품이 적은 경우) 점수 순으로 더 채웁니다(약관은 한 자료에서 최대 6개).
+  if (company && picked.length < k) {
+    for (const x of scored) {
+      if (pickedIds.has(x.it.id) || (perDoc.get(x.it.docId) || 0) >= 6) continue;
+      take(x);
+      if (picked.length >= k) break;
+    }
+    picked.sort((a, b) => b.score - a.score);
+  }
+  // 약관 본문은 여기서 읽어 옵니다.
+  const need = picked.filter(p => p.content == null).map(p => p.id);
+  if (need.length) {
+    const r = await pool.query(`SELECT id, content FROM knowledge_chunks WHERE id IN (${need.map((_, i) => '$' + (i + 1)).join(',')})`, need);
+    const m = new Map(r.rows.map(x => [x.id, x.content]));
+    picked.forEach(p => { if (p.content == null) p.content = m.get(p.id) || ''; });
   }
   return picked;
 }
@@ -269,7 +325,7 @@ async function docExists(url) {
 // PDF에서 뽑은 글자에는 널(NUL)·제어 문자가 섞이는 경우가 있고, Postgres는 이를 저장하지 못합니다.
 const cleanText = (v) => String(v == null ? '' : v).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '');
 
-async function saveDoc({ sourceType, sourceName, title, url, notice, mode, entries, userId, onProgress }) {
+async function saveDoc({ sourceType, sourceName, title, url, notice, mode, entries, userId, onProgress, company }) {
   entries = (entries || []).map(e => ({ ...e, topic: e.topic == null ? e.topic : cleanText(e.topic), content: cleanText(e.content) }));
   title = cleanText(title); notice = notice ? cleanText(notice) : notice;
   if (!entries.length) return { docId: null, saved: 0 };
@@ -279,9 +335,9 @@ async function saveDoc({ sourceType, sourceName, title, url, notice, mode, entri
   try {
     await client.query('BEGIN');
     const d = await client.query(
-      `INSERT INTO knowledge_docs (source_type, source_name, title, url, notice, mode, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-      [sourceType, sourceName, String(title).slice(0, 300), url || null, notice || null, mode, userId || null]
+      `INSERT INTO knowledge_docs (source_type, source_name, title, url, notice, mode, created_by, company)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [sourceType, sourceName, String(title).slice(0, 300), url || null, notice || null, mode, userId || null, company || null]
     );
     const docId = d.rows[0].id;
     for (let st = 0; st < entries.length; st += 100) {
@@ -604,14 +660,14 @@ let jobSeq = 0;
 
 // 약관 PDF: 올리기만 먼저 받고, 검색용 숫자 변환·저장은 서버 안에서 따로 진행합니다 (긴 요청이 끊기지 않도록).
 const termsInFlight = new Set();
-async function runTermsJob(job, { pages, sourceName, title, notice, userId, key }) {
+async function runTermsJob(job, { pages, sourceName, title, notice, userId, key, company }) {
   try {
-    const entries = pagesToEntries(pages, title, '약관원문');
+    const entries = pagesToEntries(pages, company ? `${company} ${title}` : title, '약관원문');
     if (!entries.length) { job.status = 'error'; job.message = '저장할 내용이 없습니다.'; return; }
     job.total = entries.length;
     console.log(`[지식] 약관 처리 시작: ${title} (${pages.length}쪽, ${entries.length}조각)`);
     const r = await saveDoc({
-      sourceType: 'terms', sourceName, title, url: null, notice, mode: 'data', entries, userId,
+      sourceType: 'terms', sourceName, title, url: null, notice, mode: 'data', entries, userId, company,
       onProgress: (d) => { job.done = d; },
     });
     job.learned = 1; job.notes = r.saved; job.done = job.total; job.status = 'done';
@@ -725,8 +781,10 @@ router.get('/notes', async (req, res) => {
 // 검색 시험 (질문을 넣으면 어떤 노트가 찾아지는지 확인)
 router.get('/search', async (req, res) => {
   try {
-    const hits = await search(String(req.query.q || ''), 6, 0.2);
-    res.json({ items: hits.map(h => ({ score: h.score, source: h.sourceName, title: h.title, topic: h.topic, preview: h.content.slice(0, 200) })) });
+    const qs = String(req.query.q || '');
+    const company = detectCompany(qs);
+    const hits = await search(qs, company ? 8 : 6, 0.2, { company });
+    res.json({ company, items: hits.map(h => ({ score: h.score, source: h.sourceName, title: h.title, topic: h.topic, preview: h.content.slice(0, 200) })) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -751,6 +809,7 @@ router.post('/pdf', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '파일을 선택해주세요.' });
   const sourceName = String(req.body.sourceName || '').trim();
   const isTerms = req.body.docType === 'terms'; // 약관 원문: 글자만 읽어 쪽별로 그대로 보관 (요약·변형 없음)
+  const company = String(req.body.company || '').trim().slice(0, 40) || null;
   const mode = req.body.mode === 'notes' && !isTerms ? 'notes' : 'data'; // 'vision'은 아래에서 따로 처리
   if (!sourceName) return res.status(400).json({ error: '자료 이름을 입력해주세요.' });
   try {
@@ -773,7 +832,7 @@ router.post('/pdf', upload.single('file'), async (req, res) => {
       const id = String(++jobSeq);
       const job = { id, status: 'learning', total: 0, done: 0, learned: 0, notes: 0, skipped: 0, failed: 0, log: [], message: '', pages: pages.length };
       jobs.set(id, job);
-      runTermsJob(job, { pages, sourceName, title, notice, userId: req.userId, key });
+      runTermsJob(job, { pages, sourceName, title, notice, userId: req.userId, key, company });
       return res.json({ ok: true, jobId: id, pages: pages.length });
     }
     if (req.body.mode === 'vision' && !isTerms) {
@@ -928,6 +987,180 @@ router.post('/diagnose', (req, res) => {
   res.json({ ok: true, jobId: id });
 });
 
+
+/* ───────────────────────── 보험사 약관 자동 수집 ───────────────────────── */
+
+async function fetchBuffer(url, opts = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeout || 90000);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal, redirect: 'follow', headers: { 'User-Agent': UA, 'Accept-Language': 'ko-KR,ko;q=0.9', ...(opts.headers || {}) } });
+    const buf = Buffer.from(await r.arrayBuffer());
+    return { ok: r.ok, status: r.status, buf, type: r.headers.get('content-type') || '' };
+  } catch (e) { return { ok: false, status: 0, buf: Buffer.alloc(0), error: e.message }; }
+  finally { clearTimeout(timer); }
+}
+const isPdfBuf = (b) => b && b.length > 1000 && b.subarray(0, 1024).toString('latin1').includes('%PDF');
+
+// 약관 이름으로 분류 추정
+function guessCategory(title) {
+  const t = String(title || '');
+  const rules = [['변액연금', /변액.*연금|연금.*변액/], ['변액보험', /변액/], ['일반연금', /연금/], ['종신보험', /종신/], ['정기보험', /정기/],
+    ['암보험', /암/], ['어린이보험', /어린이|자녀|태아|키즈/], ['간병·치매보험', /간병|치매/], ['실손의료보험', /실손|실비/],
+    ['저축보험', /저축|적립|교육/], ['건강·질병보험', /건강|질병|CI|상해|의료|입원|수술|치아|운전자|여행/]];
+  for (const [name, re] of rules) if (re.test(t)) return name;
+  return '기타';
+}
+
+const absUrl = (href, base) => { try { return new URL(decodeEntities(href), base).href; } catch (e) { return null; } };
+const cleanName = (s) => decodeEntities(String(s || '')).replace(/<[^>]+>/g, ' ').replace(/\.pdf$/i, '').replace(/\s+/g, ' ').trim();
+
+// 보험사별 수집기: list()는 [{title, url, headers?}]를 돌려줍니다 (약관 PDF만).
+const COLLECTORS = {
+  '메트라이프생명': {
+    async list() {
+      const base = 'https://brand.metlife.co.kr/pn/mcvrgProd/retrieveMcvrgProdMain.do';
+      const r = await fetchText(base, { timeout: 40000 });
+      if (!r.ok) throw new Error(`목록 화면을 열지 못했습니다 (HTTP ${r.status} ${r.error || ''})`);
+      // 파일 구분: fnum=03 이 약관. 같은 상품(insProdSeq)은 가장 최신 판(seq가 큰 것)만 사용.
+      const re = /<a\b[^>]*href\s*=\s*["']([^"']*mcvrgProdDownloadFile\.do\?[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+      const best = new Map();
+      let m;
+      while ((m = re.exec(r.text))) {
+        const href = decodeEntities(m[1]);
+        const q = new URLSearchParams(href.split('?')[1] || '');
+        if (q.get('fnum') !== '03') continue;
+        const prod = q.get('insProdSeq'), seq = Number(q.get('seq')) || 0;
+        const title = cleanName(m[2]) || `메트라이프 약관 ${prod}-${seq}`;
+        const cur = best.get(prod);
+        if (!cur || seq > cur.seq) best.set(prod, { seq, title, url: absUrl(href, base), headers: { Referer: base } });
+      }
+      return [...best.values()].filter(x => x.url);
+    },
+  },
+  'AIA생명': {
+    async list() {
+      const base = 'https://mypage.aia.co.kr/AIAHomepage/disclosure/our-products/selling/individual.do';
+      const r = await fetchText(base, { timeout: 40000 });
+      if (!r.ok) throw new Error(`목록 화면을 열지 못했습니다 (HTTP ${r.status} ${r.error || ''})`);
+      const out = [], seen = new Set();
+      const re = /downLoad\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]*)['"]\s*\)/g;
+      let m;
+      while ((m = re.exec(r.text))) {
+        const server = m[1], name = cleanName(m[2]);
+        if (!/약관/.test(name) || /운용설명서|사업방법서|상품요약서/.test(name) || seen.has(server)) continue;
+        seen.add(server);
+        out.push({ title: name, url: `https://mypage.aia.co.kr/AIAHomepage/disclosure/download.do?serverFileNm=${encodeURIComponent(server)}`, alt: `https://mypage.aia.co.kr/AIAHomepage/disclosure/download.do?serverFileNm=${encodeURIComponent(server)}&fileNm=${encodeURIComponent(m[2])}`, headers: { Referer: base } });
+      }
+      return out;
+    },
+  },
+  '흥국화재': {
+    async list() {
+      const base = 'https://www.heungkukfire.co.kr/FRW/announce/insGoodsGongsiSale.do';
+      const r = await fetchText(base, { timeout: 40000 });
+      if (!r.ok) throw new Error(`목록 화면을 열지 못했습니다 (HTTP ${r.status} ${r.error || ''})`);
+      const out = [], seen = new Set();
+      const re = /fn_filedownX\(\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]/g;
+      let m;
+      while ((m = re.exec(decodeEntities(r.text)))) {
+        const dir = m[1], name = cleanName(m[2]), stored = m[3];
+        if (!/약관/.test(name) || /여신|사업방법서|상품요약서/.test(name) || seen.has(stored)) continue;
+        seen.add(stored);
+        out.push({ title: name, url: `https://www.heungkukfire.co.kr${dir.startsWith('/') ? '' : '/'}${dir}${stored}`, headers: { Referer: base } });
+      }
+      return out;
+    },
+  },
+};
+
+async function downloadTerms(item) {
+  let r = await fetchBuffer(item.url, { headers: item.headers });
+  if (!isPdfBuf(r.buf) && item.alt) r = await fetchBuffer(item.alt, { headers: item.headers });
+  return r;
+}
+
+// 수집 시험: 목록을 읽고 1건만 내려받아 PDF가 맞는지 확인합니다(저장 안 함).
+router.post('/collect/test', async (req, res) => {
+  const company = String(req.body?.company || '');
+  const col = COLLECTORS[company];
+  if (!col) return res.status(400).json({ error: '아직 이 보험사의 수집기가 없습니다.' });
+  try {
+    const items = await col.list();
+    const out = { company, found: items.length, samples: items.slice(0, 5).map(x => `${x.title} → ${x.url}`) };
+    if (items.length) {
+      const r = await downloadTerms(items[0]);
+      out.first = { title: items[0].title, status: r.status, bytes: r.buf.length, isPdf: isPdfBuf(r.buf), error: r.error || null, head: isPdfBuf(r.buf) ? '' : r.buf.subarray(0, 120).toString('utf8').replace(/\s+/g, ' ') };
+      if (out.first.isPdf) {
+        try { const pages = await extractPdfPages(r.buf); out.first.pages = pages.length; out.first.chars = pages.reduce((n, p) => n + p.text.length, 0); } catch (e) { out.first.extractError = e.message; }
+      }
+    }
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+async function runCollectJob(job, { company, limit, userId }) {
+  const col = COLLECTORS[company];
+  try {
+    job.status = 'listing';
+    const items = await col.list();
+    job.total = items.length;
+    job.log.push(`목록 ${items.length}건을 찾았습니다.`);
+    let handled = 0;
+    for (const it of items) {
+      if (job.cancel) break;
+      const title = it.title.slice(0, 200);
+      const ex = await pool.query('SELECT 1 FROM knowledge_docs WHERE company = $1 AND title = $2 LIMIT 1', [company, title]);
+      if (ex.rows.length) { job.skipped++; job.done++; continue; }
+      if (handled >= limit) break; // 이번 회차 한도. 다시 누르면 이어서 진행합니다.
+      handled++;
+      job.status = 'learning'; job.message = `${job.learned + 1}번째: ${title}`;
+      try {
+        const r = await downloadTerms(it);
+        if (!isPdfBuf(r.buf)) throw new Error(`PDF가 아닙니다 (HTTP ${r.status}${r.error ? ' ' + r.error : ''})`);
+        if (r.buf.length > 60 * 1024 * 1024) throw new Error('파일이 너무 큽니다');
+        const pages = await extractPdfPages(r.buf);
+        const chars = pages.reduce((n, p) => n + p.text.length, 0);
+        if (chars < 200) throw new Error('글자를 읽지 못했습니다(스캔본일 수 있음)');
+        const entries = pagesToEntries(pages, `${company} ${title}`, '약관원문');
+        const sv = await saveDoc({ sourceType: 'terms', sourceName: `약관 · ${company} · ${guessCategory(title)}`, title, url: null, notice: null, mode: 'data', entries, userId, company });
+        job.learned++; job.notes += sv.saved; job.done++;
+        job.log.push(`완료: ${title} (${pages.length}쪽, ${sv.saved}조각)`);
+      } catch (e) {
+        job.failed++; job.done++;
+        job.log.push(`실패: ${title} (${e.message})`);
+      }
+      if (job.log.length > 80) job.log = job.log.slice(-60);
+    }
+    job.status = job.cancel ? 'cancelled' : 'done';
+    job.message = job.status === 'done' && handled >= limit ? `이번 회차 ${limit}건까지 처리했습니다. 남은 약관은 다시 눌러 이어서 수집하세요.` : '';
+  } catch (e) { job.status = 'error'; job.message = e.message; console.error('[수집] 오류:', company, e.message); }
+}
+
+router.post('/collect/start', (req, res) => {
+  const company = String(req.body?.company || '');
+  if (!COLLECTORS[company]) return res.status(400).json({ error: '아직 이 보험사의 수집기가 없습니다.' });
+  const limit = Math.max(1, Math.min(Number(req.body?.limit) || 10, 50));
+  const id = String(++jobSeq);
+  const job = { id, status: 'starting', total: 0, done: 0, learned: 0, notes: 0, skipped: 0, failed: 0, log: [], message: '' };
+  jobs.set(id, job);
+  runCollectJob(job, { company, limit, userId: req.userId });
+  res.json({ ok: true, jobId: id });
+});
+
+router.get('/collectors', (req, res) => res.json({ items: Object.keys(COLLECTORS) }));
+
+// 이미 올려둔 약관에 보험사 지정 (자료 이름 기준)
+router.post('/terms/company', async (req, res) => {
+  const name = String(req.body?.sourceName || '');
+  const company = String(req.body?.company || '').trim().slice(0, 40);
+  if (!name || !company) return res.status(400).json({ error: '자료 이름과 보험사가 필요합니다.' });
+  const newName = name.replace(/^약관\s*·\s*/, `약관 · ${company} · `).replace(new RegExp(`(${company.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} · )+`), `${company} · `);
+  const r = await pool.query(`UPDATE knowledge_docs SET company = $1, source_name = $3 WHERE source_name = $2 AND source_type = 'terms'`, [company, name, newName]);
+  invalidateCache();
+  res.json({ ok: true, updated: r.rowCount, sourceName: newName });
+});
+
 router.post('/blog/start', async (req, res) => {
   const blogId = parseBlogId(req.body?.blog);
   if (!blogId) return res.status(400).json({ error: '블로그 주소나 아이디를 확인해주세요.' });
@@ -975,4 +1208,4 @@ router.post('/youtube', async (req, res) => {
   } catch (e) { console.error('유튜브 학습 오류:', e); res.status(500).json({ error: e.message }); }
 });
 
-module.exports = { router, search, embedTexts, extractPdfPages, extractNaverPost, parseBlogId, parseYoutubeId, htmlToText, distill, saveDoc, learnFromText, invalidateCache };
+module.exports = { router, detectCompany, search, embedTexts, extractPdfPages, extractNaverPost, parseBlogId, parseYoutubeId, htmlToText, distill, saveDoc, learnFromText, invalidateCache };
