@@ -156,8 +156,10 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  await pool.query(`ALTER TABLE knowledge_docs ADD COLUMN IF NOT EXISTS company TEXT;`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_knowledge_docs_url ON knowledge_docs(url);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_knowledge_docs_source ON knowledge_docs(source_name);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_knowledge_docs_company ON knowledge_docs(company);`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS knowledge_chunks (
       id SERIAL PRIMARY KEY,
