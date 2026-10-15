@@ -33,7 +33,14 @@ async function fetchText(url, opts = {}) {
       redirect: 'follow',
       headers: { 'User-Agent': UA, 'Accept-Language': 'ko-KR,ko;q=0.9', ...(opts.headers || {}) },
     });
-    const text = await r.text();
+    // 한국 보험사 사이트 중 EUC-KR(KS_C_5601) 인코딩인 곳이 있어 글자 깨짐을 막습니다.
+    const buf = Buffer.from(await r.arrayBuffer());
+    let cs = ((r.headers.get('content-type') || '').match(/charset=([\w-]+)/i) || [])[1];
+    if (!cs) cs = (buf.subarray(0, 3000).toString('latin1').match(/charset=["']?([\w-]+)/i) || [])[1];
+    cs = String(cs || 'utf-8').toLowerCase();
+    if (/^(ks_c_5601|ksc5601|euc_kr|x-windows-949|ms949|cp949)/.test(cs)) cs = 'euc-kr';
+    let text;
+    try { text = new TextDecoder(cs).decode(buf); } catch (e) { text = buf.toString('utf8'); }
     return { ok: r.ok, status: r.status, text };
   } catch (e) {
     return { ok: false, status: 0, text: '', error: e.message };
@@ -890,6 +897,14 @@ async function runDiagnoseJob(job, companies) {
       row.textLen = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().length;
       row.hints = ['captcha', '보안문자', '자동입력방지', 'access denied', 'forbidden'].filter(k => html.toLowerCase().includes(k));
       // 판정: 열림 + 파일 링크가 보임 → 자동 수집 가능성 높음 / 열리지만 링크 없음 → 동적(화면이 JS로 그려짐) / 실패 → 막힘
+      if (job.detail) {
+        const fl = s.links.filter(l => /down|file|pdf|attach|fileSeq|약관|요약서|사업방법서/i.test(`${l.href} ${l.onclick} ${l.text}`) && !/이용약관|개인정보|전자금융|홈페이지/.test(l.text));
+        row.files = fl.slice(0, 10).map(l => `${l.text || '-'} → ${l.href || ''}${l.onclick ? ' | ' + l.onclick : ''}`.slice(0, 260));
+        row.endpointList = s.endpoints.slice(0, 15);
+        row.pdfUrls = [...new Set(html.match(/[^"'\s<>()]{4,200}\.pdf/gi) || [])].slice(0, 6);
+        row.scripts = [...new Set((html.match(/<script[^>]+src=["'][^"']+["']/gi) || []).map(x => (x.match(/src=["']([^"']+)/) || [])[1]))].filter(x => x && !/jquery|google|gtag|analytics|kakao|naver|facebook|polyfill|bootstrap/i.test(x)).slice(0, 10);
+        row.apiHints = [...new Set((html.match(/["'](\/[\w\-\/.]*(?:api|ajax|list|search|json|prod|Prod|gongsi|disclosure)[\w\-\/.?=&]*)["']/g) || []).map(x => x.slice(1, -1)))].slice(0, 15);
+      }
       row.verdict = !row.ok ? '막힘' : (row.pdfLinks > 0 || row.fileLike > 0) ? '자동수집 가능성 높음' : (row.links > 5 ? '링크는 있으나 파일 없음(2단계 필요)' : '동적 화면(추가 분석 필요)');
     } catch (e) { row.ok = false; row.error = e.message; row.verdict = '막힘'; }
     job.results.push(row); job.done = job.results.length;
@@ -907,7 +922,7 @@ router.post('/diagnose', (req, res) => {
     });
   if (!list.length) return res.status(400).json({ error: '진단할 주소가 없습니다.' });
   const id = String(++jobSeq);
-  const job = { id, status: 'starting', total: list.length, done: 0, results: [], log: [], message: '' };
+  const job = { id, status: 'starting', total: list.length, done: 0, results: [], log: [], message: '', detail: !!req.body?.detail };
   jobs.set(id, job);
   runDiagnoseJob(job, list);
   res.json({ ok: true, jobId: id });
