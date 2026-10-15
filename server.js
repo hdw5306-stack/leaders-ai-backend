@@ -75,6 +75,11 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', service: '리더스 AI 비서 백엔드 서버' });
 });
 
+// ── 화면 파일(리더스 AI 비서) 제공 — 같은 서버에서 /assistant/ 로 열립니다 ──
+app.use('/assistant', require('express').static(require('path').join(__dirname, 'public', 'assistant'), {
+  setHeaders: (res, filePath) => { if (/\.(html|json)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache'); },
+}));
+
 // ── 1) 음성인식(STT) ──────────────────────────────────────────
 app.post('/api/stt', upload.single('audio'), async (req, res) => {
   if (!process.env.OPENAI_API_KEY) {
