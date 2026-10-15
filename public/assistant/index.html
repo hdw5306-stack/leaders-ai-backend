@@ -909,6 +909,7 @@
         <div class="admin-sub-title" style="font-weight:700;color:var(--navy);">⑥ 보험 약관 올리기 (여러 파일 한 번에)</div>
         <div class="admin-sub-title">약관 PDF를 한꺼번에 선택해서 올립니다. 글자를 그대로 쪽별로 보관하므로 비용이 거의 들지 않고, AI가 요약하지 않습니다. 파일 이름이 상품 이름으로 쓰이니 "보험사_상품명_약관.pdf"처럼 지어 주세요. 이미 올린 파일은 건너뜁니다. (글자가 선택되는 PDF, 파일당 40MB 이하)</div>
         <div class="admin-form">
+          <select id="kTermsCo"><option value="">보험사 선택 (필수)</option><option>삼성생명</option><option>한화생명</option><option>교보생명</option><option>DB생명</option><option>KB라이프생명</option><option>KDB생명</option><option>흥국생명</option><option>동양생명</option><option>ABL생명</option><option>라이나생명</option><option>하나생명</option><option>카디프생명</option><option>IBK생명</option><option>iM라이프생명</option><option>메트라이프생명</option><option>미래에셋생명</option><option>농협생명</option><option>신한라이프</option><option>처브라이프</option><option>푸본현대생명</option><option>AIA생명</option><option>메리츠화재</option><option>KB손해보험</option><option>현대해상</option><option>DB손해보험</option><option>흥국화재</option><option>하나손해보험</option><option>농협손해보험</option><option>삼성화재</option><option>롯데손해보험</option><option>AIG손해보험</option><option>한화손해보험</option></select>
           <select id="kTermsCat">
             <option>종신보험</option><option>정기보험</option><option>건강·질병보험</option><option>암보험</option>
             <option>어린이보험</option><option>간병·치매보험</option><option>일반연금</option><option>변액연금</option>
@@ -916,6 +917,14 @@
           </select>
           <input type="file" id="kTermsFiles" accept=".pdf,application/pdf" multiple>
           <button type="button" id="kTermsBtn">약관 올리기</button>
+        </div>
+
+        <div class="admin-sub-title" style="font-weight:700;color:var(--navy);margin-top:6px;">⑦ 보험사 약관 자동 수집</div>
+        <div class="admin-sub-title">보험사 공시실에서 약관 PDF를 서버가 직접 내려받아 저장합니다. 먼저 "수집 시험"으로 목록과 1건 내려받기를 확인한 뒤 "수집 시작"을 누르세요. 한 번에 10건씩 처리하며, 다시 누르면 이어서 진행합니다(이미 받은 약관은 건너뜁니다).</div>
+        <div class="admin-form">
+          <select id="kColCo"><option value="메트라이프생명">메트라이프생명</option><option value="AIA생명">AIA생명</option><option value="흥국화재">흥국화재</option></select>
+          <button type="button" id="kColTestBtn">수집 시험 (저장 안 함)</button>
+          <button type="button" id="kColStartBtn">수집 시작 (10건씩)</button>
         </div>
 
         <div class="admin-sub-title" style="font-weight:700;color:var(--navy);margin-top:6px;">⑤ 약관 공시실 접속 시험</div>
@@ -2387,6 +2396,16 @@ async function renderKnowledge() {
         if (!confirm(`"${row.source_name}" 학습 내용을 모두 삭제하시겠습니까?`)) return;
         try { await kFetch('/source?name=' + encodeURIComponent(row.source_name), { method: 'DELETE' }); renderKnowledge(); } catch (e) { kMsg(e.message); }
       };
+      if (row.source_type === 'terms' && !/^약관 · .+ · /.test(row.source_name)) {
+        const coBtn = document.createElement('button');
+        coBtn.className = 'admin-btn'; coBtn.textContent = '보험사 지정';
+        coBtn.onclick = async () => {
+          const c = (prompt('이 약관의 보험사 이름을 입력하세요 (예: 메리츠화재)') || '').trim();
+          if (!c) return;
+          try { await kFetch('/terms/company', { method: 'POST', body: JSON.stringify({ sourceName: row.source_name, company: c }) }); renderKnowledge(); } catch (e) { kMsg(e.message); }
+        };
+        act.appendChild(coBtn);
+      }
       act.appendChild(viewBtn); act.appendChild(delBtn);
       listEl.appendChild(card);
     });
@@ -2509,7 +2528,9 @@ document.getElementById('kTermsBtn').addEventListener('click', async (ev) => {
   const files = Array.from(document.getElementById('kTermsFiles').files || []);
   if (!files.length) { kMsg('약관 PDF 파일을 선택해주세요. (여러 개 선택 가능)'); return; }
   const cat = document.getElementById('kTermsCat').value;
-  const sourceName = `약관 · ${cat}`;
+  const co = document.getElementById('kTermsCo').value;
+  if (!co) { kMsg('보험사를 먼저 선택해주세요. (보험사별로 약관을 찾는 데 필요합니다)'); return; }
+  const sourceName = `약관 · ${co} · ${cat}`;
   kBusy(ev.target, true, true); kOut('');
   const log = []; let ok = 0, skip = 0, fail = 0, pages = 0;
   for (let i = 0; i < files.length; i++) {
@@ -2519,7 +2540,7 @@ document.getElementById('kTermsBtn').addEventListener('click', async (ev) => {
     if (f.size > 40 * 1024 * 1024) { fail++; log.push(`실패: ${f.name} (40MB 초과)`); kOut(log.join('\n')); continue; }
     const form = new FormData();
     form.append('file', f); form.append('sourceName', sourceName); form.append('title', title);
-    form.append('mode', 'data'); form.append('docType', 'terms'); form.append('skipExisting', '1');
+    form.append('mode', 'data'); form.append('docType', 'terms'); form.append('skipExisting', '1'); form.append('company', co);
     try {
       const isNet = (m) => /Failed to fetch|NetworkError|Load failed/i.test(m || '');
       let r;
@@ -2563,6 +2584,35 @@ document.getElementById('kTermsBtn').addEventListener('click', async (ev) => {
   document.getElementById('kTermsFiles').value = '';
   kBusy(ev.target, false);
   renderKnowledge();
+});
+
+document.getElementById('kColTestBtn').addEventListener('click', async (ev) => {
+  const company = document.getElementById('kColCo').value;
+  kBusy(ev.target, true, true); kOut(''); kMsg(company + ' 목록을 읽고 1건을 내려받아 확인하는 중…');
+  try {
+    const x = await kFetch('/collect/test', { method: 'POST', body: JSON.stringify({ company }) });
+    kMsg('');
+    const f = x.first;
+    kOut(company + ' · 약관 후보 ' + x.found + '건\n\n[예시]\n' + (x.samples || []).join('\n') + (f ? '\n\n[1건 내려받기]\n' + f.title + '\nHTTP ' + f.status + ' · ' + f.bytes + '바이트 · ' + (f.isPdf ? 'PDF 확인됨 · ' + (f.pages || 0) + '쪽 · 글자 ' + (f.chars || 0) + (f.extractError ? ' · 읽기오류: ' + f.extractError : '') : 'PDF가 아님: ' + (f.head || f.error || '')) : '\n\n목록에서 약관을 찾지 못했습니다.'));
+  } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
+});
+
+document.getElementById('kColStartBtn').addEventListener('click', async (ev) => {
+  const company = document.getElementById('kColCo').value;
+  kBusy(ev.target, true, true); kOut('');
+  try {
+    const st = await kFetch('/collect/start', { method: 'POST', body: JSON.stringify({ company, limit: 10 }) });
+    let job = {};
+    for (let i = 0; i < 1200; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      try { job = await kFetch('/jobs/' + st.jobId); } catch (e) { kMsg('연결 확인 중… ' + e.message); continue; }
+      kMsg(company + ' 수집 중 — 완료 ' + (job.learned || 0) + ' · 건너뜀 ' + (job.skipped || 0) + ' · 실패 ' + (job.failed || 0) + ' / 목록 ' + (job.total || 0) + (job.message ? ' · ' + job.message : ''));
+      kOut((job.log || []).join('\n'));
+      if (['done', 'error', 'cancelled'].indexOf(job.status) >= 0) break;
+    }
+    kMsg(job.status === 'error' ? '오류: ' + job.message : '끝났습니다. 완료 ' + (job.learned || 0) + '건 · 건너뜀 ' + (job.skipped || 0) + ' · 실패 ' + (job.failed || 0) + (job.message ? ' · ' + job.message : ''));
+    renderKnowledge();
+  } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
 });
 
 document.getElementById('kProbeBtn').addEventListener('click', async (ev) => {
