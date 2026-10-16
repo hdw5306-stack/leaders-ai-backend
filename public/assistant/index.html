@@ -940,6 +940,7 @@ https://www.idbins.com</textarea>
           <button type="button" id="kLinksBtn" style="margin-top:8px;">첫 줄 주소의 링크 목록 보기</button>
           <button type="button" id="kDiagBtn" style="margin-top:8px;">보험사 33곳 한 번에 진단</button>
           <button type="button" id="kDiag2Btn" style="margin-top:8px;">정밀 진단 (열리는 곳만 · 상세)</button>
+          <button type="button" id="kFuncBtn" style="margin-top:8px;">다운로드 방식 조사 (흥국화재·교보·동양·라이나)</button>
         </div>
 
         <div class="admin-msg" id="kMsg"></div>
@@ -2612,6 +2613,28 @@ document.getElementById('kColStartBtn').addEventListener('click', async (ev) => 
     }
     kMsg(job.status === 'error' ? '오류: ' + job.message : '끝났습니다. 완료 ' + (job.learned || 0) + '건 · 건너뜀 ' + (job.skipped || 0) + ' · 실패 ' + (job.failed || 0) + (job.message ? ' · ' + job.message : ''));
     renderKnowledge();
+  } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
+});
+
+document.getElementById('kFuncBtn').addEventListener('click', async (ev) => {
+  kBusy(ev.target, true, true); kOut(''); kMsg('사이트 스크립트를 조사 중입니다… (약 2~4분)');
+  try {
+    const targets = [
+      { name: '흥국화재', url: 'https://www.heungkukfire.co.kr/FRW/announce/insGoodsGongsiSale.do', terms: ['fn_filedownX', 'filedownX'] },
+      { name: '교보생명', url: 'https://www.kyobo.com/dgt/web/product-official/all-product/search', terms: ['fileDownload', '/file/ajax/download', 'find-allProductSearchDetail'] },
+      { name: '동양생명', url: 'https://pbano.myangel.co.kr/paging/WE_AC_WEPAAP020100L', terms: ['MasFiledownload', 'Filedownload'] },
+      { name: '라이나생명', url: 'https://www.lina.co.kr/disclosure/product-public-announcement/product-on-sales?key=0', terms: ['A0289', 'product-on-sales'] },
+    ];
+    const st = await kFetch('/probe/func', { method: 'POST', body: JSON.stringify({ targets }) });
+    let job = {};
+    for (let i = 0; i < 400; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      try { job = await kFetch('/jobs/' + st.jobId); } catch (e) { kMsg('연결 확인 중… ' + e.message); continue; }
+      kMsg('조사 중 ' + (job.done || 0) + '/' + (job.total || targets.length));
+      if (job.status === 'done' || job.status === 'cancelled') break;
+    }
+    kMsg('');
+    kOut((job.results || []).map(r => '■ ' + r.name + (r.error ? ' — ' + r.error : ' (스크립트 ' + r.scripts + '개 확인)') + '\n' + (r.found || []).map(f => '[' + f.term + '] ' + f.src + '\n' + f.snippet).join('\n\n')).join('\n\n=========\n\n'));
   } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
 });
 
