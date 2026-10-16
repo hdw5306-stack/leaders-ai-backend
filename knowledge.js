@@ -1117,7 +1117,7 @@ async function runCollectJob(job, { company, limit, userId }) {
       job.status = 'learning'; job.message = `${job.learned + 1}번째: ${title}`;
       try {
         const r = await downloadTerms(it);
-        if (!isPdfBuf(r.buf)) throw new Error(`PDF가 아닙니다 (HTTP ${r.status}${r.error ? ' ' + r.error : ''})`);
+        if (!isPdfBuf(r.buf)) throw new Error(`PDF가 아닙니다 (HTTP ${r.status}${r.error ? ' ' + r.error : ''}, 받은 내용: ${r.buf.subarray(0, 100).toString('utf8').replace(/\s+/g, ' ')}) 주소: ${it.url}`.slice(0, 400));
         if (r.buf.length > 60 * 1024 * 1024) throw new Error('파일이 너무 큽니다');
         const pages = await extractPdfPages(r.buf);
         const chars = pages.reduce((n, p) => n + p.text.length, 0);
@@ -1159,6 +1159,58 @@ router.post('/terms/company', async (req, res) => {
   const r = await pool.query(`UPDATE knowledge_docs SET company = $1, source_name = $3 WHERE source_name = $2 AND source_type = 'terms'`, [company, name, newName]);
   invalidateCache();
   res.json({ ok: true, updated: r.rowCount, sourceName: newName });
+});
+
+
+// 사이트 화면·스크립트 안에서 다운로드 함수 등 글자를 찾아 앞뒤 내용을 보여줍니다(수집기를 만들기 위한 구조 파악용, 저장 안 함).
+async function runFuncJob(job, targets) {
+  job.status = 'running'; job.total = targets.length; job.results = [];
+  for (const t of targets) {
+    if (job.cancel) break;
+    const row = { name: t.name, url: t.url, found: [], scripts: 0 };
+    try {
+      const page = await fetchText(t.url, { timeout: 25000 });
+      if (!page.ok) { row.error = `페이지를 열지 못했습니다 (HTTP ${page.status} ${page.error || ''})`; job.results.push(row); job.done++; continue; }
+      const docs = [{ src: '(화면 자체)', text: page.text }];
+      const srcs = [...new Set((page.text.match(/<script[^>]+src=["'][^"']+["']/gi) || []).map(x => (x.match(/src=["']([^"']+)/) || [])[1]))]
+        .map(x => absUrl(x, t.url)).filter(x => x && !/jquery|google|gtag|analytics|kakao|naver|facebook|polyfill|adobedtm|daumcdn|ruxit|nethru|bootstrap|html5|respond|css3/i.test(x)).slice(0, 25);
+      for (const u of srcs) {
+        const r = await fetchText(u, { timeout: 20000 });
+        if (r.ok && r.text) docs.push({ src: u, text: r.text });
+      }
+      row.scripts = docs.length - 1;
+      for (const term of t.terms) {
+        const defRe = new RegExp(`(function\\s+${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(|${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[:=]\\s*function)`);
+        let shown = 0;
+        for (const d of docs) {
+          const m = defRe.exec(d.text);
+          if (m) { row.found.push({ term, src: d.src, snippet: d.text.slice(Math.max(0, m.index - 100), m.index + 900).replace(/\s+/g, ' ') }); shown++; break; }
+        }
+        if (!shown) {
+          for (const d of docs) {
+            const i = d.text.indexOf(term);
+            if (i >= 0) { row.found.push({ term, src: d.src, snippet: d.text.slice(Math.max(0, i - 200), i + 600).replace(/\s+/g, ' ') }); shown++; break; }
+          }
+        }
+        if (!shown) row.found.push({ term, src: '-', snippet: '(찾지 못함)' });
+      }
+    } catch (e) { row.error = e.message; }
+    job.results.push(row); job.done++;
+  }
+  job.status = job.cancel ? 'cancelled' : 'done';
+}
+
+router.post('/probe/func', (req, res) => {
+  const targets = (Array.isArray(req.body?.targets) ? req.body.targets : []).slice(0, 8).map(t => ({
+    name: String(t?.name || '').slice(0, 40), url: String(t?.url || '').trim(),
+    terms: (Array.isArray(t?.terms) ? t.terms : []).map(x => String(x).slice(0, 80)).filter(Boolean).slice(0, 6),
+  })).filter(t => t.terms.length && /^https?:\/\//i.test(t.url));
+  if (!targets.length) return res.status(400).json({ error: '조사할 주소와 찾을 글자가 필요합니다.' });
+  const id = String(++jobSeq);
+  const job = { id, status: 'starting', total: targets.length, done: 0, results: [], log: [], message: '' };
+  jobs.set(id, job);
+  runFuncJob(job, targets);
+  res.json({ ok: true, jobId: id });
 });
 
 router.post('/blog/start', async (req, res) => {
