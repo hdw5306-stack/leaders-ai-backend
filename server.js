@@ -127,16 +127,58 @@ app.post('/api/stt', upload.single('audio'), async (req, res) => {
 // 있습니다. 그래서 답변 음성은 서버에서 OpenAI TTS로 mp3 파일을 만들어
 // 내려주는 방식을 기본으로 씁니다 — 어떤 브라우저(카카오톡 포함)에서
 // 열어도 항상 동일하게 소리가 납니다.
+// ── Azure 한국어 신경망 음성 (설정되어 있을 때만 사용, 없으면 OpenAI 음성) ──────
+// Railway 환경변수: AZURE_SPEECH_KEY, AZURE_SPEECH_REGION (예: koreacentral)
+const AZURE_VOICES = ['ko-KR-SunHiNeural', 'ko-KR-JiMinNeural', 'ko-KR-SeoHyeonNeural', 'ko-KR-YuJinNeural',
+  'ko-KR-HyunsuNeural', 'ko-KR-InJoonNeural', 'ko-KR-BongJinNeural', 'ko-KR-GookMinNeural', 'ko-KR-SoonBokNeural'];
+const azureConfigured = () => !!(process.env.AZURE_SPEECH_KEY && /^[a-z0-9-]{2,40}$/.test((process.env.AZURE_SPEECH_REGION || '').trim().toLowerCase()));
+app.get('/api/tts/config', (req, res) => res.json({ azure: azureConfigured(), azureVoices: azureConfigured() ? AZURE_VOICES : [] }));
+
+async function azureSpeak(text, voice, style, speed) {
+  const region = process.env.AZURE_SPEECH_REGION.trim().toLowerCase();
+  let rate = Math.round(((Math.min(1.3, Math.max(0.8, Number(speed) || 1))) - 1) * 100);
+  let pitch = '0%';
+  if (style === 'calm') { rate -= 8; pitch = '-2%'; }
+  else if (style === 'bright') { rate += 4; pitch = '+4%'; }
+  else if (style === 'news') { rate += 2; }
+  const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const ssml = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="ko-KR"><voice name="${voice}"><prosody rate="${rate >= 0 ? '+' : ''}${rate}%" pitch="${pitch}">${esc(text)}</prosody></voice></speak>`;
+  const r = await fetch(`https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+    method: 'POST',
+    headers: {
+      'Ocp-Apim-Subscription-Key': process.env.AZURE_SPEECH_KEY.trim(),
+      'Content-Type': 'application/ssml+xml',
+      'X-Microsoft-OutputFormat': 'audio-24khz-96kbitrate-mono-mp3',
+      'User-Agent': 'LeadersAIAssistant',
+    },
+    body: ssml,
+  });
+  if (!r.ok) throw new Error(`Azure HTTP ${r.status} ${(await r.text()).slice(0, 200)}`);
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (!buf.length) throw new Error('Azure 빈 오디오');
+  return buf;
+}
+
 app.post('/api/tts', async (req, res) => {
-  if (!process.env.OPENAI_API_KEY) {
-    return res.status(500).json({ error: 'OPENAI_API_KEY 환경변수가 설정되지 않았습니다.' });
-  }
   const { text, voice, style, speed } = req.body || {};
   if (!text || !text.trim()) {
     return res.status(400).json({ error: '읽어줄 텍스트가 없습니다.' });
   }
+  // Azure 한국어 음성을 골랐고 설정이 되어 있으면 Azure로, 실패하면 OpenAI 음성으로 대신합니다.
+  if (AZURE_VOICES.includes(voice) && azureConfigured()) {
+    try {
+      const buf = await azureSpeak(text.slice(0, 1500), voice, style, speed);
+      res.set('Content-Type', 'audio/mpeg');
+      return res.send(buf);
+    } catch (e) {
+      console.error('Azure TTS 실패:', e.message);
+    }
+  }
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: 'OPENAI_API_KEY 환경변수가 설정되지 않았습니다.' });
+  }
   const allowedVoices = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar'];
-  const useVoice = allowedVoices.includes(voice) ? voice : 'nova';
+  const useVoice = allowedVoices.includes(voice) ? voice : (/Neural$/.test(voice || '') && /(HyunsuNeural|InJoonNeural|BongJinNeural|GookMinNeural)/.test(voice) ? 'onyx' : 'nova');
   const STYLES = {
     counsel: 'Speak in natural, fluent Korean as a warm, trustworthy insurance counselor. Calm, kind and reassuring, with gentle pauses.',
     expert: 'Speak in natural, fluent Korean as a calm, authoritative financial expert. Clear, steady and professional.',
