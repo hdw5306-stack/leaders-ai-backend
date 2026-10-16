@@ -130,17 +130,23 @@ app.post('/api/stt', upload.single('audio'), async (req, res) => {
 // ── Azure 한국어 신경망 음성 (설정되어 있을 때만 사용, 없으면 OpenAI 음성) ──────
 // Railway 환경변수: AZURE_SPEECH_KEY, AZURE_SPEECH_REGION (예: koreacentral)
 const AZURE_VOICES = ['ko-KR-SunHiNeural', 'ko-KR-JiMinNeural', 'ko-KR-SeoHyeonNeural', 'ko-KR-YuJinNeural',
-  'ko-KR-HyunsuNeural', 'ko-KR-InJoonNeural', 'ko-KR-BongJinNeural', 'ko-KR-GookMinNeural', 'ko-KR-SoonBokNeural'];
+  'ko-KR-HyunsuNeural', 'ko-KR-InJoonNeural', 'ko-KR-BongJinNeural', 'ko-KR-GookMinNeural', 'ko-KR-SoonBokNeural',
+  // 다국어(Multilingual) 음성 — 한국어도 읽을 수 있고 한국어 전용 음성과 음색이 많이 달라 다양성을 높여 줍니다.
+  'en-US-AndrewMultilingualNeural', 'en-US-BrianMultilingualNeural', 'en-US-AvaMultilingualNeural', 'en-US-EmmaMultilingualNeural',
+  'fr-FR-RemyMultilingualNeural', 'fr-FR-VivienneMultilingualNeural', 'de-DE-FlorianMultilingualNeural', 'de-DE-SeraphinaMultilingualNeural',
+  'it-IT-GiuseppeMultilingualNeural', 'pt-BR-ThalitaMultilingualNeural', 'ja-JP-MasaruMultilingualNeural'];
 const azureConfigured = () => !!(process.env.AZURE_SPEECH_KEY && /^[a-z0-9-]{2,40}$/.test((process.env.AZURE_SPEECH_REGION || '').trim().toLowerCase()));
 app.get('/api/tts/config', (req, res) => res.json({ azure: azureConfigured(), azureVoices: azureConfigured() ? AZURE_VOICES : [] }));
 
-async function azureSpeak(text, voice, style, speed) {
+async function azureSpeak(text, voice, style, speed, pitchPct) {
   const region = process.env.AZURE_SPEECH_REGION.trim().toLowerCase();
   let rate = Math.round(((Math.min(1.3, Math.max(0.8, Number(speed) || 1))) - 1) * 100);
   let pitch = '0%';
+  const pp = Math.max(-25, Math.min(25, Math.round(Number(pitchPct) || 0)));
   if (style === 'calm') { rate -= 8; pitch = '-2%'; }
   else if (style === 'bright') { rate += 4; pitch = '+4%'; }
   else if (style === 'news') { rate += 2; }
+  if (pp) { const cur = parseInt(pitch, 10) || 0; const v = Math.max(-30, Math.min(30, cur + pp)); pitch = (v >= 0 ? '+' : '') + v + '%'; }
   const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const ssml = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="ko-KR"><voice name="${voice}"><prosody rate="${rate >= 0 ? '+' : ''}${rate}%" pitch="${pitch}">${esc(text)}</prosody></voice></speak>`;
   const r = await fetch(`https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
@@ -160,14 +166,14 @@ async function azureSpeak(text, voice, style, speed) {
 }
 
 app.post('/api/tts', async (req, res) => {
-  const { text, voice, style, speed } = req.body || {};
+  const { text, voice, style, speed, pitch, persona, fallback } = req.body || {};
   if (!text || !text.trim()) {
     return res.status(400).json({ error: '읽어줄 텍스트가 없습니다.' });
   }
   // Azure 한국어 음성을 골랐고 설정이 되어 있으면 Azure로, 실패하면 OpenAI 음성으로 대신합니다.
   if (AZURE_VOICES.includes(voice) && azureConfigured()) {
     try {
-      const buf = await azureSpeak(text.slice(0, 1500), voice, style, speed);
+      const buf = await azureSpeak(text.slice(0, 1500), voice, style, speed, pitch);
       res.set('Content-Type', 'audio/mpeg');
       return res.send(buf);
     } catch (e) {
@@ -178,7 +184,7 @@ app.post('/api/tts', async (req, res) => {
     return res.status(500).json({ error: 'OPENAI_API_KEY 환경변수가 설정되지 않았습니다.' });
   }
   const allowedVoices = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar'];
-  const useVoice = allowedVoices.includes(voice) ? voice : (/Neural$/.test(voice || '') && /(HyunsuNeural|InJoonNeural|BongJinNeural|GookMinNeural)/.test(voice) ? 'onyx' : 'nova');
+  const useVoice = allowedVoices.includes(voice) ? voice : allowedVoices.includes(fallback) ? fallback : (/Neural$/.test(voice || '') && /(HyunsuNeural|InJoonNeural|BongJinNeural|GookMinNeural)/.test(voice) ? 'onyx' : 'nova');
   const STYLES = {
     counsel: 'Speak in natural, fluent Korean as a warm, trustworthy insurance counselor. Calm, kind and reassuring, with gentle pauses.',
     expert: 'Speak in natural, fluent Korean as a calm, authoritative financial expert. Clear, steady and professional.',
@@ -186,7 +192,7 @@ app.post('/api/tts', async (req, res) => {
     calm: 'Speak in natural, fluent Korean slowly and softly, in a relaxed, soothing tone.',
     news: 'Speak in natural, fluent Korean with crisp, precise articulation like a professional announcer.',
   };
-  const instructions = STYLES[style] || STYLES.counsel;
+  const instructions = (STYLES[style] || STYLES.counsel) + (typeof persona === 'string' && persona ? ' ' + persona.replace(/[^\w\s.,'\-]/g, '').slice(0, 220) : '');
   const sp = Math.min(1.3, Math.max(0.8, Number(speed) || 1));
   const input = text.slice(0, 1500);
   const primary = process.env.TTS_MODEL || 'gpt-4o-mini-tts';
