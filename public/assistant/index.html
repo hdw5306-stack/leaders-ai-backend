@@ -959,11 +959,11 @@
         <div class="admin-sub-title">보험사 공시실에서 약관 PDF를 서버가 직접 내려받아 저장합니다. 먼저 "수집 시험"으로 목록과 1건 내려받기를 확인한 뒤 "수집 시작"을 누르세요. 한 번에 10건씩 처리하며, 다시 누르면 이어서 진행합니다(이미 받은 약관은 건너뜁니다).</div>
         <div class="admin-sub-title">수집 기준 — 용량을 아끼기 위해 필요한 종류의 최근 약관만 받습니다. 약관 이름에 적힌 날짜(예: 20260701, 26.10)로 기간을 판단하고, 날짜를 알 수 없으면 포함합니다. 종류는 이름으로 분류하며 애매한 것은 AI(OpenAI)가 이름만 보고 한 번 더 판단합니다.</div>
         <div class="admin-form">
-          <select id="kColYears"><option value="1">최근 1년 약관만</option><option value="2" selected>최근 2년 약관만</option><option value="3">최근 3년 약관만</option><option value="0">기간 제한 없음</option></select>
+          <select id="kColYears"><option value="1">최근 1년 약관만</option><option value="2">최근 2년 약관만</option><option value="3" selected>최근 3년 약관만</option><option value="0">기간 제한 없음</option></select>
           <div id="kColCats" style="line-height:1.9;"><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="종신(일반)" checked> 종신(일반)</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="종신(변액)" checked> 종신(변액)</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="연금(일반)" checked> 연금(일반)</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="연금(변액)" checked> 연금(변액)</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="건강보험" checked> 건강보험</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="정기보험" checked> 정기보험</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="어린이보험" checked> 어린이보험</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="치아보험" checked> 치아보험</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="간병·치매보험" checked> 간병·치매보험</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="실손의료보험"> 실손의료보험</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="저축보험"> 저축보험</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="기타"> 기타</label></div>
         </div>
         <div class="admin-form">
-          <select id="kColCo"><option value="메트라이프생명">메트라이프생명</option><option value="AIA생명">AIA생명</option><option value="흥국화재">흥국화재</option></select>
+          <select id="kColCo"><option value="메트라이프생명">메트라이프생명</option><option value="AIA생명">AIA생명</option><option value="흥국화재">흥국화재</option><option value="교보생명">교보생명</option><option value="동양생명">동양생명</option><option value="라이나생명">라이나생명</option></select>
           <button type="button" id="kColTestBtn">수집 시험 (저장 안 함)</button>
           <button type="button" id="kColStartBtn">수집 시작 (10건씩)</button>
         </div>
@@ -2608,8 +2608,8 @@ document.getElementById('kColTestBtn').addEventListener('click', async (ev) => {
     const x = await kFetch('/collect/test', { method: 'POST', body: JSON.stringify({ company, ...kColCriteria() }) });
     kMsg('');
     const f = x.first;
-    kOut(company + ' · 목록 ' + x.found + '건 → 수집 대상 ' + x.eligible + '건 (분류 제외 ' + x.excludedCategory + ' · 기간 제외 ' + x.excludedOld + ')\n\n[수집 대상 예시]\n' + (x.samples || []).join('\n') + '\n\n[제외 예시]\n' + (x.skippedSamples || []).join('\n') + (f ? '\n\n[1건 내려받기]\n' + f.title + '\nHTTP ' + f.status + ' · ' + f.bytes + '바이트 · ' + (f.isPdf ? 'PDF 확인됨 · ' + (f.pages || 0) + '쪽 · 글자 ' + (f.chars || 0) + (f.extractError ? ' · 읽기오류: ' + f.extractError : '') : 'PDF가 아님: ' + (f.head || f.error || '')) : '\n\n목록에서 약관을 찾지 못했습니다.'));
-  } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
+    kOut(company + ' · 목록 ' + x.found + '건 → 수집 대상 ' + x.eligible + '건 (분류 제외 ' + x.excludedCategory + ' · 기간 제외 ' + x.excludedOld + ')\n\n[수집 대상 예시]\n' + (x.samples || []).join('\n') + '\n\n[제외 예시]\n' + (x.skippedSamples || []).join('\n') + (f ? '\n\n[1건 내려받기]\n' + f.title + '\nHTTP ' + f.status + ' · ' + f.bytes + '바이트 · ' + (f.isPdf ? 'PDF 확인됨 · ' + (f.pages || 0) + '쪽 · 글자 ' + (f.chars || 0) + (f.extractError ? ' · 읽기오류: ' + f.extractError : '') : 'PDF가 아님: ' + (f.head || f.error || '') + (f.url ? '\n주소: ' + f.url : '') + (f.diag ? '\n' + f.diag : '')) : '\n\n목록에서 약관을 찾지 못했습니다.'));
+  } catch (e) { kMsg('수집 시험 실패 — 아래 내용을 알려주시면 바로 맞춰 고칩니다.'); kOut(e.message); } finally { kBusy(ev.target, false); }
 });
 
 document.getElementById('kColStartBtn').addEventListener('click', async (ev) => {
