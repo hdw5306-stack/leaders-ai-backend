@@ -470,7 +470,7 @@
     background: var(--paper);
     box-shadow: inset 0 0 0 1px rgba(11,26,51,0.06);
   }
-  .avatar-card .thumb svg, .avatar-card .thumb img { width: 100%; height: 100%; object-fit: contain; object-position: center bottom; }
+  .avatar-card .thumb svg, .avatar-card .thumb img { width: 100%; height: 100%; object-fit: cover; object-position: center 12%; }
   .avatar-card .label { font-size: 11.5px; color: var(--ink); }
   .avatar-card .label small { display: block; color: var(--ink-muted); font-size: 10px; }
 
@@ -486,6 +486,12 @@
   }
   .upload-zone input { display: none; }
 
+  .voice-ctl { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+  .voice-ctl label { font-size: 12.5px; color: var(--ink-muted); display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 140px; }
+  .voice-ctl select { font-family: inherit; font-size: 13px; padding: 7px 8px; border: 1px solid var(--navy-line); border-radius: 8px; background: #fff; color: var(--ink); }
+  .mode-row { display: flex; gap: 6px; padding: 6px 16px 0; flex-wrap: wrap; }
+  .mode-btn { font-size: 12px; border: 1px solid var(--navy-line); color: var(--navy); background: #fff; border-radius: 16px; padding: 5px 11px; cursor: pointer; font-family: inherit; }
+  .mode-btn.active { background: var(--navy); color: #fff; border-color: var(--navy); }
   .voice-row {
     display: flex;
     align-items: center;
@@ -727,6 +733,11 @@
       <div class="name" id="attachPreviewName"></div>
       <button class="remove" id="attachRemoveBtn">삭제</button>
     </div>
+    <div class="mode-row" id="modeRow">
+      <button class="mode-btn active" type="button" data-mode="auto" title="질문에 맞춰 일반 AI·보험 전문가로 자동 전환합니다">✨ 자동</button>
+      <button class="mode-btn" type="button" data-mode="coaching" title="고객 상황·고객의 말을 알려주면 심리를 분석하고 상담 스킬을 코칭합니다">🧭 상담 코칭</button>
+      <button class="mode-btn" type="button" data-mode="roleplay" title="AI가 고객 역할을 하고, 설계사가 응대를 연습합니다">🎭 롤플레이 연습</button>
+    </div>
     <div class="composer">
       <input type="file" id="attachInput" accept="image/*" style="display:none;">
       <button class="icon-btn attach-btn" id="attachBtn" title="사진/서류 첨부">📎</button>
@@ -777,7 +788,7 @@
 
       <div class="settings-block">
         <div class="section-label">아바타 선택</div>
-        <div class="avatar-grid" id="avatarGrid"></div>
+        <div id="avatarGrid"></div>
       </div>
 
       <div class="settings-block">
@@ -910,17 +921,18 @@
         <div class="admin-sub-title">약관 PDF를 한꺼번에 선택해서 올립니다. 글자를 그대로 쪽별로 보관하므로 비용이 거의 들지 않고, AI가 요약하지 않습니다. 파일 이름이 상품 이름으로 쓰이니 "보험사_상품명_약관.pdf"처럼 지어 주세요. 이미 올린 파일은 건너뜁니다. (글자가 선택되는 PDF, 파일당 40MB 이하)</div>
         <div class="admin-form">
           <select id="kTermsCo"><option value="">보험사 선택 (필수)</option><option>삼성생명</option><option>한화생명</option><option>교보생명</option><option>DB생명</option><option>KB라이프생명</option><option>KDB생명</option><option>흥국생명</option><option>동양생명</option><option>ABL생명</option><option>라이나생명</option><option>하나생명</option><option>카디프생명</option><option>IBK생명</option><option>iM라이프생명</option><option>메트라이프생명</option><option>미래에셋생명</option><option>농협생명</option><option>신한라이프</option><option>처브라이프</option><option>푸본현대생명</option><option>AIA생명</option><option>메리츠화재</option><option>KB손해보험</option><option>현대해상</option><option>DB손해보험</option><option>흥국화재</option><option>하나손해보험</option><option>농협손해보험</option><option>삼성화재</option><option>롯데손해보험</option><option>AIG손해보험</option><option>한화손해보험</option></select>
-          <select id="kTermsCat">
-            <option>종신보험</option><option>정기보험</option><option>건강·질병보험</option><option>암보험</option>
-            <option>어린이보험</option><option>간병·치매보험</option><option>일반연금</option><option>변액연금</option>
-            <option>변액보험</option><option>저축보험</option><option>실손의료보험</option><option>손해보험</option><option>기타</option>
-          </select>
+          <select id="kTermsCat"><option>종신(일반)</option><option>종신(변액)</option><option>연금(일반)</option><option>연금(변액)</option><option>건강보험</option><option>정기보험</option><option>어린이보험</option><option>치아보험</option><option>간병·치매보험</option><option>실손의료보험</option><option>저축보험</option><option>기타</option></select>
           <input type="file" id="kTermsFiles" accept=".pdf,application/pdf" multiple>
           <button type="button" id="kTermsBtn">약관 올리기</button>
         </div>
 
         <div class="admin-sub-title" style="font-weight:700;color:var(--navy);margin-top:6px;">⑦ 보험사 약관 자동 수집</div>
         <div class="admin-sub-title">보험사 공시실에서 약관 PDF를 서버가 직접 내려받아 저장합니다. 먼저 "수집 시험"으로 목록과 1건 내려받기를 확인한 뒤 "수집 시작"을 누르세요. 한 번에 10건씩 처리하며, 다시 누르면 이어서 진행합니다(이미 받은 약관은 건너뜁니다).</div>
+        <div class="admin-sub-title">수집 기준 — 용량을 아끼기 위해 필요한 종류의 최근 약관만 받습니다. 약관 이름에 적힌 날짜(예: 20260701, 26.10)로 기간을 판단하고, 날짜를 알 수 없으면 포함합니다. 종류는 이름으로 분류하며 애매한 것은 AI(OpenAI)가 이름만 보고 한 번 더 판단합니다.</div>
+        <div class="admin-form">
+          <select id="kColYears"><option value="1">최근 1년 약관만</option><option value="2" selected>최근 2년 약관만</option><option value="3">최근 3년 약관만</option><option value="0">기간 제한 없음</option></select>
+          <div id="kColCats" style="line-height:1.9;"><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="종신(일반)" checked> 종신(일반)</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="종신(변액)" checked> 종신(변액)</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="연금(일반)" checked> 연금(일반)</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="연금(변액)" checked> 연금(변액)</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="건강보험" checked> 건강보험</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="정기보험" checked> 정기보험</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="어린이보험" checked> 어린이보험</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="치아보험" checked> 치아보험</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="간병·치매보험" checked> 간병·치매보험</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="실손의료보험"> 실손의료보험</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="저축보험"> 저축보험</label><label style="display:inline-block;margin:2px 10px 2px 0;font-size:13px;"><input type="checkbox" class="kColCat" value="기타"> 기타</label></div>
+        </div>
         <div class="admin-form">
           <select id="kColCo"><option value="메트라이프생명">메트라이프생명</option><option value="AIA생명">AIA생명</option><option value="흥국화재">흥국화재</option></select>
           <button type="button" id="kColTestBtn">수집 시험 (저장 안 함)</button>
@@ -1102,131 +1114,143 @@ let SCHEDULE_DB = [
 /* ============================================================
    아바타 프리셋 (고급 일러스트 인물, 가상 캐릭터 — 실제 인물 아님)
 ============================================================ */
-function robotSVG(cfg) {
-  const p = cfg.id;
-  const defs = `
-    <defs>
-      <linearGradient id="${p}-head" x1="15%" y1="0%" x2="85%" y2="100%">
-        <stop offset="0%" stop-color="${cfg.headHi}"/>
-        <stop offset="100%" stop-color="${cfg.headLo}"/>
-      </linearGradient>
-      <linearGradient id="${p}-body" x1="15%" y1="0%" x2="85%" y2="100%">
-        <stop offset="0%" stop-color="${cfg.bodyHi}"/>
-        <stop offset="100%" stop-color="${cfg.bodyLo}"/>
-      </linearGradient>
-      <radialGradient id="${p}-core" cx="38%" cy="32%" r="75%">
-        <stop offset="0%" stop-color="#fff6df"/>
-        <stop offset="50%" stop-color="${cfg.accent}"/>
-        <stop offset="100%" stop-color="${cfg.accentDeep}"/>
-      </radialGradient>
-      <radialGradient id="${p}-shine" cx="32%" cy="28%" r="60%">
-        <stop offset="0%" stop-color="#ffffff" stop-opacity="0.55"/>
-        <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
-      </radialGradient>
-    </defs>`;
-
-  // 귀여운 동그란 눈 (하이라이트 포함)
-  const cuteEyes = (cx, cy, spread, r) => `
-    <circle cx="${cx-spread}" cy="${cy}" r="${r}" fill="#12141c"/>
-    <circle cx="${cx+spread}" cy="${cy}" r="${r}" fill="#12141c"/>
-    <circle cx="${cx-spread+r*0.35}" cy="${cy-r*0.35}" r="${r*0.34}" fill="#ffffff"/>
-    <circle cx="${cx+spread+r*0.35}" cy="${cy-r*0.35}" r="${r*0.34}" fill="#ffffff"/>
-    ${cfg.eyeGlow ? `<circle cx="${cx-spread}" cy="${cy}" r="${r*1.7}" fill="${cfg.accent}" opacity="0.16"/><circle cx="${cx+spread}" cy="${cy}" r="${r*1.7}" fill="${cfg.accent}" opacity="0.16"/>` : ''}
-  `;
-
+function personSVG(c) {
+  const p = c.id;
+  const W = 240, H = 300;
+  const hairBack = {
+    long: `<path d="M60 128 C52 62 90 36 120 36 C150 36 188 62 180 128 L188 236 C170 252 148 242 142 228 L98 228 C92 242 70 252 52 236 Z" fill="url(#${p}-hair)"/>`,
+    bob: `<path d="M62 132 C56 62 92 38 120 38 C148 38 184 62 178 132 L178 176 C172 190 160 184 158 172 L82 172 C80 184 68 190 62 176 Z" fill="url(#${p}-hair)"/>`,
+    short: '', slick: ''
+  }[c.hair];
+  const hairFront = {
+    long: `<path d="M68 124 C64 66 96 48 124 48 C156 48 176 70 172 126 C162 98 142 78 112 76 C92 84 74 100 68 124 Z" fill="url(#${p}-hair)"/><path d="M96 60 C112 52 136 52 150 62" stroke="#fff" stroke-opacity=".18" stroke-width="3" fill="none" stroke-linecap="round"/>`,
+    bob: `<path d="M66 128 C62 66 94 46 122 46 C154 46 178 68 174 130 C166 100 146 80 118 76 C94 82 74 100 66 128 Z" fill="url(#${p}-hair)"/><path d="M92 58 C110 50 138 52 154 64" stroke="#fff" stroke-opacity=".2" stroke-width="3" fill="none" stroke-linecap="round"/>`,
+    short: `<path d="M68 118 C62 62 94 42 122 42 C154 42 178 62 172 118 C168 96 152 80 130 74 C104 76 80 88 68 118 Z" fill="url(#${p}-hair)"/><path d="M90 54 C108 46 138 48 156 60" stroke="#fff" stroke-opacity=".18" stroke-width="3" fill="none" stroke-linecap="round"/>`,
+    slick: `<path d="M68 114 C62 60 96 40 124 40 C156 40 178 62 172 114 C170 94 156 78 134 70 C108 70 82 84 68 114 Z" fill="url(#${p}-hair)"/><path d="M84 62 C108 46 140 46 160 62" stroke="#fff" stroke-opacity=".35" stroke-width="3" fill="none" stroke-linecap="round"/>`
+  }[c.hair];
+  const eye = (x) => `
+    <ellipse cx="${x}" cy="128" rx="9.5" ry="5.4" fill="#fbf8f4"/>
+    <circle cx="${x}" cy="128" r="4.3" fill="${c.iris || '#3a2a20'}"/>
+    <circle cx="${x}" cy="128" r="2" fill="#0d0b0b"/>
+    <circle cx="${x + 1.6}" cy="126.4" r="1.2" fill="#fff"/>
+    <path d="M${x - 10} 128 Q${x} 120.5 ${x + 10} 128" stroke="#2a1d18" stroke-width="2.2" fill="none" stroke-linecap="round"/>`;
+  const brow = (x, s) => `<path d="M${x - 11 * s} 115 Q${x} ${c.male ? 108 : 107.5} ${x + 11 * s} ${c.male ? 113 : 114}" stroke="url(#${p}-hair)" stroke-width="${c.male ? 3.8 : 3}" fill="none" stroke-linecap="round"/>`;
+  const glasses = c.glasses ? `
+    <rect x="86" y="118" width="30" height="21" rx="7" fill="#ffffff" fill-opacity=".07" stroke="${c.frame || '#b48a3c'}" stroke-width="2.2"/>
+    <rect x="124" y="118" width="30" height="21" rx="7" fill="#ffffff" fill-opacity=".07" stroke="${c.frame || '#b48a3c'}" stroke-width="2.2"/>
+    <path d="M116 126 Q120 123 124 126" stroke="${c.frame || '#b48a3c'}" stroke-width="2" fill="none"/>` : '';
+  const jacket = `
+    <path d="M6 300 C8 250 50 232 98 226 L120 264 L142 226 C190 232 232 250 234 300 Z" fill="url(#${p}-suit)"/>
+    <path d="M98 226 L120 264 L142 226 L132 221 L108 221 Z" fill="${c.shirt}"/>
+    ${c.male ? '' : `<path d="M104 228 Q120 250 136 228" fill="none" stroke="${c.shirtLo}" stroke-width="1.5" opacity=".6"/>`}
+    <path d="M98 226 L84 234 L102 274 L120 264 Z" fill="${c.suitLo}"/>
+    <path d="M142 226 L156 234 L138 274 L120 264 Z" fill="${c.suitLo}"/>
+    <path d="M98 226 L84 234 L102 274" fill="none" stroke="${c.gold}" stroke-width="1.2" opacity=".7"/>
+    <path d="M142 226 L156 234 L138 274" fill="none" stroke="${c.gold}" stroke-width="1.2" opacity=".7"/>
+    ${c.male
+      ? `<path d="M114 238 L126 238 L124 246 L128 256 L120 296 L112 256 L116 246 Z" fill="${c.tie}"/><path d="M114 238 L126 238 L124 246 L116 246 Z" fill="#000" opacity=".18"/>`
+      : `<path d="M101 236 Q120 262 139 236" fill="none" stroke="${c.gold}" stroke-width="1.8"/><circle cx="120" cy="258" r="4.2" fill="${c.gold}"/><circle cx="118.8" cy="256.8" r="1.4" fill="#fff" opacity=".7"/>`}
+    <circle cx="82" cy="262" r="3.2" fill="${c.gold}"/>
+    <ellipse cx="52" cy="262" rx="40" ry="14" fill="#fff" opacity=".07" transform="rotate(-14 52 262)"/>`;
   return `
-  <svg viewBox="0 0 200 380" width="200" height="380" xmlns="http://www.w3.org/2000/svg">
-    ${defs}
-    <ellipse cx="100" cy="360" rx="52" ry="9" fill="#000000" opacity="0.13"/>
-
-    <!-- 다리(짧고 통통) -->
-    <rect x="70" y="308" width="24" height="34" rx="12" fill="url(#${p}-body)"/>
-    <rect x="106" y="308" width="24" height="34" rx="12" fill="url(#${p}-body)"/>
-    <ellipse cx="82" cy="346" rx="17" ry="11" fill="${cfg.accent}"/>
-    <ellipse cx="118" cy="346" rx="17" ry="11" fill="${cfg.accent}"/>
-
-    <!-- 팔(짧고 동그란 뭉치) -->
-    <circle cx="38" cy="238" r="19" fill="url(#${p}-body)"/>
-    <circle cx="162" cy="238" r="19" fill="url(#${p}-body)"/>
-    <circle cx="35" cy="234" r="7" fill="url(#${p}-shine)"/>
-    <circle cx="159" cy="234" r="7" fill="url(#${p}-shine)"/>
-
-    <!-- 몸통(둥글둥글) -->
-    <ellipse cx="100" cy="252" rx="62" ry="58" fill="url(#${p}-body)"/>
-    <ellipse cx="100" cy="252" rx="62" ry="58" fill="none" stroke="${cfg.accent}" stroke-width="2" opacity="0.45"/>
-    <circle cx="100" cy="256" r="15" fill="#10131c"/>
-    <circle cx="100" cy="256" r="11.5" fill="url(#${p}-core)"/>
-    <ellipse cx="76" cy="220" rx="22" ry="14" fill="url(#${p}-shine)"/>
-
-    ${cfg.antenna ? `<line x1="100" y1="66" x2="100" y2="44" stroke="${cfg.accent}" stroke-width="5" stroke-linecap="round"/><circle cx="100" cy="38" r="8" fill="url(#${p}-core)"/>` : ''}
-
-    <!-- 머리(크고 동글동글, 귀여운 비율) -->
-    <circle cx="100" cy="150" r="86" fill="url(#${p}-head)"/>
-    <circle cx="100" cy="150" r="86" fill="none" stroke="${cfg.accent}" stroke-width="2" opacity="0.4"/>
-    <ellipse cx="66" cy="112" rx="30" ry="20" fill="url(#${p}-shine)"/>
-
-    ${cuteEyes(100, 156, 26, 12)}
-
-    ${cfg.smile ? `<path d="M82 190 Q100 204 118 190" stroke="#12141c" stroke-width="4" fill="none" stroke-linecap="round"/>` : `<rect x="86" y="188" width="28" height="5" rx="2.5" fill="#12141c"/>`}
-
-    ${cfg.cheeks ? `<ellipse cx="46" cy="168" rx="11" ry="7" fill="${cfg.accent}" opacity="0.4"/><ellipse cx="154" cy="168" rx="11" ry="7" fill="${cfg.accent}" opacity="0.4"/>` : ''}
-
-    ${cfg.earDots ? `<circle cx="18" cy="150" r="9" fill="${cfg.accent}"/><circle cx="182" cy="150" r="9" fill="${cfg.accent}"/>` : ''}
+  <svg viewBox="0 0 ${W} ${H}" width="${W * 2}" height="${H * 2}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="${p}-skin" cx="42%" cy="36%" r="75%"><stop offset="0%" stop-color="${c.skinHi}"/><stop offset="100%" stop-color="${c.skin}"/></radialGradient>
+      <linearGradient id="${p}-neck" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${c.skinLo}"/><stop offset="55%" stop-color="${c.skin}"/></linearGradient>
+      <linearGradient id="${p}-hair" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="${c.hairHi}"/><stop offset="100%" stop-color="${c.hairLo}"/></linearGradient>
+      <linearGradient id="${p}-suit" x1="0.1" y1="0" x2="0.9" y2="1"><stop offset="0%" stop-color="${c.suitHi}"/><stop offset="100%" stop-color="${c.suitLo}"/></linearGradient>
+      <radialGradient id="${p}-glow" cx="50%" cy="48%" r="50%"><stop offset="0%" stop-color="${c.gold}" stop-opacity=".30"/><stop offset="100%" stop-color="${c.gold}" stop-opacity="0"/></radialGradient>
+    </defs>
+    <circle cx="120" cy="150" r="124" fill="url(#${p}-glow)"/>
+    ${hairBack}
+    <path d="M101 168 L101 226 Q120 244 139 226 L139 168 Z" fill="url(#${p}-neck)"/>
+    ${jacket}
+    <ellipse cx="70" cy="134" rx="7" ry="11" fill="${c.skin}"/><ellipse cx="170" cy="134" rx="7" ry="11" fill="${c.skin}"/>
+    <path d="M70 118 C70 78 94 62 120 62 C146 62 170 78 170 118 C170 152 150 188 120 192 C90 188 70 152 70 118 Z" fill="url(#${p}-skin)"/>
+    <ellipse cx="90" cy="150" rx="11" ry="6.5" fill="#e88c8c" opacity="${c.male ? 0.10 : 0.22}"/><ellipse cx="150" cy="150" rx="11" ry="6.5" fill="#e88c8c" opacity="${c.male ? 0.10 : 0.22}"/>
+    ${brow(101, 1)}${brow(139, -1)}
+    ${eye(101)}${eye(139)}
+    <path d="M120 132 Q115 150 119 155 Q124 157 127 153" stroke="${c.skinLo}" stroke-width="2" fill="none" stroke-linecap="round" opacity=".7"/>
+    <path d="M104 167 Q120 179 136 167 Q120 172 104 167 Z" fill="${c.lip}" stroke="${c.lip}" stroke-width="1.6" stroke-linejoin="round"/>
+    ${c.male && c.stubble ? `<path d="M84 160 C90 186 108 194 120 194 C132 194 150 186 156 160 C150 176 136 182 120 182 C104 182 90 176 84 160Z" fill="#000" opacity=".035"/>` : ''}
+    ${hairFront}
+    ${glasses}
   </svg>`;
 }
 
-const ROBOT_CONFIGS = [
-  {
-    id: "coco", name: "코코", tagline: "동글동글 네이비",
-    headHi: "#2f4d80", headLo: "#12274a", bodyHi: "#274670", bodyLo: "#0f2148",
-    accent: "#c6a15b", accentDeep: "#8a6a34",
-    antenna: true, smile: true, cheeks: true, earDots: false, eyeGlow: false
-  },
-  {
-    id: "mochi", name: "모찌", tagline: "펄 화이트",
-    headHi: "#faf8f3", headLo: "#e2ddc9", bodyHi: "#f2ede0", bodyLo: "#d8d2bc",
-    accent: "#c6a15b", accentDeep: "#8a6a34",
-    antenna: true, smile: true, cheeks: true, earDots: false, eyeGlow: false
-  },
-  {
-    id: "pico", name: "피코", tagline: "소프트 그레이",
-    headHi: "#6b707c", headLo: "#3c3f47", bodyHi: "#5c6069", bodyLo: "#2e3138",
-    accent: "#c6a15b", accentDeep: "#8a6a34",
-    antenna: false, smile: true, cheeks: false, earDots: true, eyeGlow: false
-  },
-  {
-    id: "goldie", name: "골디", tagline: "골드 스페셜",
-    headHi: "#e7c988", headLo: "#b8903f", bodyHi: "#dcbb79", bodyLo: "#a9803f",
-    accent: "#12274a", accentDeep: "#0b1a33",
-    antenna: true, smile: true, cheeks: true, earDots: false, eyeGlow: true
-  },
-  {
-    id: "sky", name: "스카이", tagline: "소프트 블루",
-    headHi: "#6f8fc4", headLo: "#3a5a92", bodyHi: "#5c7fb8", bodyLo: "#2f4d80",
-    accent: "#f3dca0", accentDeep: "#c6a15b",
-    antenna: true, smile: true, cheeks: true, earDots: false, eyeGlow: true
-  },
-  {
-    id: "ink", name: "잉크", tagline: "미니멀 블랙",
-    headHi: "#3a3d46", headLo: "#16171c", bodyHi: "#2e3138", bodyLo: "#101114",
-    accent: "#c6a15b", accentDeep: "#8a6a34",
-    antenna: false, smile: true, cheeks: false, earDots: true, eyeGlow: false
-  }
+function orbSVG() {
+  return `
+  <svg viewBox="0 0 240 300" width="480" height="600" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <radialGradient id="orb-core" cx="36%" cy="30%" r="80%"><stop offset="0%" stop-color="#fff6df"/><stop offset="38%" stop-color="#e3c27a"/><stop offset="100%" stop-color="#7d5c26"/></radialGradient>
+      <radialGradient id="orb-glow" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#e9cf8d" stop-opacity=".45"/><stop offset="100%" stop-color="#e9cf8d" stop-opacity="0"/></radialGradient>
+    </defs>
+    <circle cx="120" cy="150" r="124" fill="url(#orb-glow)"/>
+    <ellipse cx="120" cy="150" rx="104" ry="30" fill="none" stroke="#c6a15b" stroke-width="1.6" opacity=".7" transform="rotate(-24 120 150)"/>
+    <ellipse cx="120" cy="150" rx="104" ry="30" fill="none" stroke="#e9cf8d" stroke-width="1.2" opacity=".5" transform="rotate(32 120 150)"/>
+    <circle cx="120" cy="150" r="62" fill="url(#orb-core)"/>
+    <ellipse cx="100" cy="124" rx="24" ry="15" fill="#fff" opacity=".4"/>
+  </svg>`;
+}
+
+const AVATAR_DEFS = [
+  { id: 'seoyun', name: '서윤', tagline: '신뢰의 상담 파트너', male: false, hair: 'long',
+    skin: '#eec7a6', skinHi: '#f8dcc3', skinLo: '#d7a982', hairHi: '#3b2a26', hairLo: '#15100f', lip: '#c4616a', iris: '#3a261c',
+    suitHi: '#2c4a7e', suitLo: '#12274a', shirt: '#fbf8f1', shirtLo: '#cfc6b0', gold: '#c6a15b', voice: 'coral', style: 'counsel' },
+  { id: 'jian', name: '지안', tagline: '세련된 전문가', male: false, hair: 'bob', glasses: true, frame: '#c6a15b',
+    skin: '#f3d4ba', skinHi: '#fde6d2', skinLo: '#dcb694', hairHi: '#5a4032', hairLo: '#241713', lip: '#b8545e', iris: '#4a3322',
+    suitHi: '#f1ece0', suitLo: '#cfc6b0', shirt: '#1d3a6e', shirtLo: '#0f2148', gold: '#b48a3c', voice: 'shimmer', style: 'expert' },
+  { id: 'haeun', name: '하은', tagline: '밝고 따뜻한 동반자', male: false, hair: 'long',
+    skin: '#f6dcc6', skinHi: '#feeadb', skinLo: '#e0bd9e', hairHi: '#7a4e34', hairLo: '#3a2216', lip: '#cf6f78', iris: '#5a3a24',
+    suitHi: '#3a3d46', suitLo: '#16171c', shirt: '#f4efe3', shirtLo: '#cfc6b0', gold: '#d2ad63', voice: 'nova', style: 'bright' },
+  { id: 'doyun', name: '도윤', tagline: '든든한 파트너', male: true, hair: 'short',
+    skin: '#ecc5a2', skinHi: '#f7d9bd', skinLo: '#d2a47c', hairHi: '#2a2220', hairLo: '#0d0b0b', lip: '#b66b66', iris: '#2f2018', stubble: true,
+    suitHi: '#2c4a7e', suitLo: '#12274a', shirt: '#fbf8f1', shirtLo: '#cfc6b0', tie: '#c6a15b', gold: '#c6a15b', voice: 'onyx', style: 'expert' },
+  { id: 'minjae', name: '민재', tagline: '스마트한 분석가', male: true, hair: 'short', glasses: true, frame: '#2c2f38',
+    skin: '#f1cfb0', skinHi: '#fbe3cb', skinLo: '#d8ae88', hairHi: '#4a3326', hairLo: '#1d130d', lip: '#bb706b', iris: '#3a281c',
+    suitHi: '#4a4f5a', suitLo: '#23262d', shirt: '#eef1f6', shirtLo: '#c3c9d6', tie: '#1d3a6e', gold: '#c6a15b', voice: 'ash', style: 'counsel' },
+  { id: 'junghun', name: '정훈', tagline: '노련한 멘토', male: true, hair: 'slick',
+    skin: '#e9c19e', skinHi: '#f4d5b6', skinLo: '#cf9f78', hairHi: '#d9dce2', hairLo: '#8e939e', lip: '#a9625d', iris: '#3a2a20',
+    suitHi: '#2a2c33', suitLo: '#0e0f13', shirt: '#fbf8f1', shirtLo: '#cfc6b0', tie: '#8b1e2d', gold: '#d2ad63', voice: 'cedar', style: 'expert' },
 ];
 
-const AVATAR_PRESETS = ROBOT_CONFIGS.map(cfg => {
-  const svg = robotSVG(cfg);
-  const img = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
-  return { id: cfg.id, name: cfg.name, gender: 'robot', tagline: cfg.tagline, svg, img };
+const AVATAR_PRESETS = AVATAR_DEFS.map(c => {
+  const svg = personSVG(c);
+  return {
+    id: c.id, name: c.name, gender: c.male ? 'male' : 'female', tagline: c.tagline, kind: 'person',
+    svg, img: 'data:image/svg+xml;utf8,' + encodeURIComponent(svg),
+    face: { skin: c.skin }, voice: c.voice, style: c.style,
+  };
 });
+(function () {
+  const svg = orbSVG();
+  AVATAR_PRESETS.push({
+    id: 'lumi', name: '루미', gender: 'orb', tagline: '골드 오브 비서', kind: 'orb',
+    svg, img: 'data:image/svg+xml;utf8,' + encodeURIComponent(svg), voice: 'marin', style: 'bright',
+  });
+})();
 
 let selectedAvatarId = AVATAR_PRESETS[0].id;
+try {
+  const savedAv = localStorage.getItem('avatarId');
+  if (savedAv && AVATAR_PRESETS.some(a => a.id === savedAv)) selectedAvatarId = savedAv;
+} catch (e) {}
 let customAvatarSrc = null;   // 업로드한 이미지가 있으면 dataURL 저장
 let selectedVoiceURI = null;  // 브라우저 자체 음성(서버 TTS 실패 시 대체용으로만 사용)
-let selectedOpenAIVoice = 'nova'; // 실제 답변 음성(서버 TTS)에 쓰이는 목소리
+let selectedOpenAIVoice = AVATAR_PRESETS[0].voice; // 실제 답변 음성(서버 TTS)에 쓰이는 목소리
+let selectedVoiceStyle = AVATAR_PRESETS[0].style;  // 말투(상담/전문가/밝게/차분/또박또박)
+let selectedVoiceSpeed = 1;                         // 말 속도
+let voiceManual = false;                            // 직접 고른 적이 있으면 아바타를 바꿔도 목소리를 유지
 try {
   const savedVoice = localStorage.getItem('ttsVoice');
   if (savedVoice) selectedOpenAIVoice = savedVoice;
+  const sv = localStorage.getItem('ttsStyle'); if (sv) selectedVoiceStyle = sv;
+  const sp = parseFloat(localStorage.getItem('ttsSpeed')); if (sp >= 0.8 && sp <= 1.3) selectedVoiceSpeed = sp;
+  voiceManual = localStorage.getItem('ttsManual') === '1';
+  if (!voiceManual) {
+    const pa = AVATAR_PRESETS.find(a => a.id === selectedAvatarId);
+    if (pa) { selectedOpenAIVoice = pa.voice; selectedVoiceStyle = pa.style; }
+  }
 } catch (e) { /* 저장 공간을 못 쓰는 환경이면 기본값(nova) 사용 */ }
 let currentSpeechAudio = null;
 let ASSISTANT_NAME = AVATAR_PRESETS[0].name;
@@ -1433,6 +1457,23 @@ function routeAndAnswer(text) {
 
 // 최근 대화 내용(끝말잇기처럼 문맥이 이어져야 하는 대화를 위해 기억해둡니다)
 let CHAT_HISTORY = [];
+let CHAT_MODE = 'auto'; // auto | coaching | roleplay
+const MODE_INFO = {
+  auto: { ph: '메시지를 입력하거나 마이크를 누르세요', msg: '자동 모드: 질문에 맞춰 일반 AI와 보험 전문가로 자동 전환합니다.' },
+  coaching: { ph: '고객 상황이나 고객이 한 말을 알려주세요', msg: '상담 코칭: 고객 상황이나 고객이 한 말을 그대로 알려주세요. 심리를 분석하고 바로 쓸 멘트를 안내해 드립니다. (이름·연락처는 자동으로 가려서 전송됩니다)' },
+  roleplay: { ph: '연습할 고객 상황을 말하거나 응대를 입력하세요', msg: '롤플레이 연습: 연습할 상황(예: 40대 가장, 보험료가 부담된다는 고객)을 알려주시면 제가 고객이 됩니다. 끝나면 "평가"라고 입력하세요.' },
+};
+document.querySelectorAll('#modeRow .mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const m = btn.dataset.mode;
+    if (m === CHAT_MODE) return;
+    CHAT_MODE = m;
+    CHAT_HISTORY = [];
+    document.querySelectorAll('#modeRow .mode-btn').forEach(b => b.classList.toggle('active', b === btn));
+    document.getElementById('textInput').placeholder = MODE_INFO[m].ph;
+    addMsg('system', MODE_INFO[m].msg);
+  });
+});
 
 // 질문의 실제 의도를 이해해서 자연스럽게 답하도록, 서버(OpenAI)에 물어봅니다.
 // (약관/보상사례/미디어 목록을 함께 보내 참고자료로 쓰되, 답변 자체는 AI가 만듭니다)
@@ -1448,7 +1489,7 @@ async function askAI(text) {
     const res = await fetch(`${API_BASE}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ message: text, termsDb: TERMS_DB, claimsDb: CLAIMS_DB, mediaDb: MEDIA_DB, history: CHAT_HISTORY }),
+      body: JSON.stringify({ message: text, termsDb: TERMS_DB, claimsDb: CLAIMS_DB, mediaDb: MEDIA_DB, history: CHAT_HISTORY, mode: CHAT_MODE === 'auto' ? undefined : CHAT_MODE }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'AI 상담 응답에 실패했습니다.');
@@ -2591,14 +2632,20 @@ document.getElementById('kTermsBtn').addEventListener('click', async (ev) => {
   renderKnowledge();
 });
 
+function kColCriteria() {
+  return {
+    years: Number(document.getElementById('kColYears').value),
+    categories: Array.from(document.querySelectorAll('.kColCat:checked')).map(x => x.value),
+  };
+}
 document.getElementById('kColTestBtn').addEventListener('click', async (ev) => {
   const company = document.getElementById('kColCo').value;
   kBusy(ev.target, true, true); kOut(''); kMsg(company + ' 목록을 읽고 1건을 내려받아 확인하는 중…');
   try {
-    const x = await kFetch('/collect/test', { method: 'POST', body: JSON.stringify({ company }) });
+    const x = await kFetch('/collect/test', { method: 'POST', body: JSON.stringify({ company, ...kColCriteria() }) });
     kMsg('');
     const f = x.first;
-    kOut(company + ' · 약관 후보 ' + x.found + '건\n\n[예시]\n' + (x.samples || []).join('\n') + (f ? '\n\n[1건 내려받기]\n' + f.title + '\nHTTP ' + f.status + ' · ' + f.bytes + '바이트 · ' + (f.isPdf ? 'PDF 확인됨 · ' + (f.pages || 0) + '쪽 · 글자 ' + (f.chars || 0) + (f.extractError ? ' · 읽기오류: ' + f.extractError : '') : 'PDF가 아님: ' + (f.head || f.error || '')) : '\n\n목록에서 약관을 찾지 못했습니다.'));
+    kOut(company + ' · 목록 ' + x.found + '건 → 수집 대상 ' + x.eligible + '건 (분류 제외 ' + x.excludedCategory + ' · 기간 제외 ' + x.excludedOld + ')\n\n[수집 대상 예시]\n' + (x.samples || []).join('\n') + '\n\n[제외 예시]\n' + (x.skippedSamples || []).join('\n') + (f ? '\n\n[1건 내려받기]\n' + f.title + '\nHTTP ' + f.status + ' · ' + f.bytes + '바이트 · ' + (f.isPdf ? 'PDF 확인됨 · ' + (f.pages || 0) + '쪽 · 글자 ' + (f.chars || 0) + (f.extractError ? ' · 읽기오류: ' + f.extractError : '') : 'PDF가 아님: ' + (f.head || f.error || '')) : '\n\n목록에서 약관을 찾지 못했습니다.'));
   } catch (e) { kMsg(e.message); } finally { kBusy(ev.target, false); }
 });
 
@@ -2606,7 +2653,7 @@ document.getElementById('kColStartBtn').addEventListener('click', async (ev) => 
   const company = document.getElementById('kColCo').value;
   kBusy(ev.target, true, true); kOut('');
   try {
-    const st = await kFetch('/collect/start', { method: 'POST', body: JSON.stringify({ company, limit: 10 }) });
+    const st = await kFetch('/collect/start', { method: 'POST', body: JSON.stringify({ company, limit: 10, ...kColCriteria() }) });
     let job = {};
     for (let i = 0; i < 1200; i++) {
       await new Promise(r => setTimeout(r, 3000));
@@ -2926,7 +2973,7 @@ async function speak(text, onEnd) {
       const res = await fetch(`${API_BASE}/api/tts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: selectedOpenAIVoice }),
+        body: JSON.stringify({ text, voice: selectedOpenAIVoice, style: selectedVoiceStyle, speed: selectedVoiceSpeed }),
       });
       if (res.ok) {
         const blob = await res.blob();
@@ -3148,13 +3195,14 @@ function buildHeadFor(cfg) {
   three3d.parts = { eyeL, eyeR, mouth };
 }
 
-function loadPhotoPlane(src) {
+function loadPhotoPlane(src, preset) {
   clearGroup();
   three3d.mode = 'photo';
   three3d.parts = {};
   const loader = new THREE.TextureLoader();
   loader.load(src, (tex) => {
     tex.premultiplyAlpha = false;
+    tex.anisotropy = 4;
     const iw = tex.image.width, ih = tex.image.height;
     const aspect = iw / ih;
     const frameH = 3.9;              // 세로를 프레임에 꽉 채움 (인물이 크게 보이도록)
@@ -3164,24 +3212,98 @@ function loadPhotoPlane(src) {
     const plane = new THREE.Mesh(new THREE.PlaneGeometry(planeW, planeH), mat);
     plane.position.y = -0.15;
     three3d.group.add(plane);
+
+    // 일러스트 인물이면 말할 때 입이 열리고, 눈이 깜빡이도록 덧그림 메시를 얹습니다.
+    if (preset && preset.face) {
+      const sx = (x) => (x / 240 - 0.5) * planeW;
+      const sy = (y) => -0.15 + (0.5 - y / 300) * planeH;
+      const unit = new THREE.CircleGeometry(1, 28);
+      const mouth = new THREE.Mesh(unit, new THREE.MeshBasicMaterial({ color: 0x5a1f26 }));
+      mouth.position.set(sx(120), sy(168), 0.02);
+      mouth.visible = false;
+      const mw = (13 / 240) * planeW, mh = (8 / 300) * planeH;
+      mouth.scale.set(mw, mh * 0.2, 1);
+      const skinHex = parseInt(preset.face.skin.replace('#', ''), 16);
+      const lidL = new THREE.Mesh(unit, new THREE.MeshBasicMaterial({ color: skinHex }));
+      const lidR = new THREE.Mesh(unit, new THREE.MeshBasicMaterial({ color: skinHex }));
+      const lw = (11.5 / 240) * planeW, lh = (7.5 / 300) * planeH;
+      lidL.position.set(sx(101), sy(127), 0.02); lidR.position.set(sx(139), sy(127), 0.02);
+      lidL.scale.set(lw, lh, 1); lidR.scale.set(lw, lh, 1);
+      lidL.visible = lidR.visible = false;
+      three3d.group.add(mouth, lidL, lidR);
+      three3d.parts = { mouth, lidL, lidR, mw, mh };
+    }
   });
+}
+
+// 골드 오브 비서 (인물 없이 빛나는 구체 — 말할 때 맥박처럼 일렁입니다)
+function buildOrb() {
+  clearGroup();
+  three3d.mode = 'orb';
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(1.15, 48, 36),
+    new THREE.MeshStandardMaterial({ color: 0xd9b66a, emissive: 0x8a6a34, emissiveIntensity: 0.55, metalness: 0.65, roughness: 0.22 })
+  );
+  const halo = new THREE.Mesh(
+    new THREE.SphereGeometry(1.45, 32, 24),
+    new THREE.MeshBasicMaterial({ color: 0xf3dca0, transparent: true, opacity: 0.16, side: THREE.BackSide })
+  );
+  const ringMat = new THREE.MeshBasicMaterial({ color: 0xe9cf8d, transparent: true, opacity: 0.8 });
+  const ring1 = new THREE.Mesh(new THREE.TorusGeometry(1.85, 0.022, 10, 120), ringMat);
+  const ring2 = new THREE.Mesh(new THREE.TorusGeometry(2.15, 0.016, 10, 120), ringMat);
+  ring1.rotation.x = 1.2; ring2.rotation.x = 1.2; ring2.rotation.y = 0.9;
+  const dots = new THREE.Group();
+  for (let i = 0; i < 24; i++) {
+    const d = new THREE.Mesh(new THREE.SphereGeometry(0.03, 6, 6), new THREE.MeshBasicMaterial({ color: 0xfff1c9 }));
+    const ang = (i / 24) * Math.PI * 2, r = 2.5 + (i % 3) * 0.12;
+    d.position.set(Math.cos(ang) * r, Math.sin(ang * 2) * 0.5, Math.sin(ang) * r);
+    dots.add(d);
+  }
+  three3d.group.add(core, halo, ring1, ring2, dots);
+  three3d.parts = { core, halo, ring1, ring2, dots };
 }
 
 function animateThree() {
   requestAnimationFrame(animateThree);
   if (!three3d) return;
   const t = performance.now() / 1000;
+  const speaking = AVATAR_MODE === 'speaking';
 
-  three3d.group.rotation.y = Math.sin(t * 0.5) * (three3d.mode === 'photo' ? 0.22 : 0.14);
-  three3d.group.rotation.x = Math.sin(t * 0.7) * 0.03;
-  three3d.group.position.y = Math.sin(t * 1.1) * 0.04;
+  if (three3d.mode === 'orb') {
+    const P = three3d.parts;
+    const amp = speaking ? 0.12 : AVATAR_MODE === 'listening' ? 0.07 : 0.03;
+    const sp = speaking ? 9 : 2;
+    const k = 1 + Math.abs(Math.sin(t * sp)) * amp;
+    P.core.scale.setScalar(k);
+    P.halo.scale.setScalar(1 + (k - 1) * 1.8);
+    P.core.material.emissiveIntensity = speaking ? 0.9 + Math.sin(t * 12) * 0.25 : AVATAR_MODE === 'thinking' ? 0.8 : 0.55;
+    P.ring1.rotation.z = t * (speaking ? 1.4 : 0.5);
+    P.ring2.rotation.z = -t * (speaking ? 1.1 : 0.35);
+    P.dots.rotation.y = t * 0.3;
+    three3d.group.rotation.y = Math.sin(t * 0.4) * 0.2;
+    three3d.group.position.y = Math.sin(t * 1.1) * 0.05;
+  } else {
+    three3d.group.rotation.y = Math.sin(t * 0.5) * (three3d.mode === 'photo' ? (three3d.parts.mouth ? 0.08 : 0.22) : 0.14);
+    three3d.group.rotation.x = Math.sin(t * 0.7) * 0.03;
+    three3d.group.position.y = Math.sin(t * 1.1) * 0.04;
+  }
 
+  if (three3d.mode === 'photo' && three3d.parts.mouth) {
+    const P = three3d.parts;
+    P.mouth.visible = speaking;
+    if (speaking) {
+      const o = 0.25 + Math.abs(Math.sin(t * 10.5)) * 0.75 * (0.6 + 0.4 * Math.abs(Math.sin(t * 3.1)));
+      P.mouth.scale.set(P.mw * (0.8 + o * 0.35), P.mh * o, 1);
+    }
+    const blinking = (t % 3.6) > 3.47;
+    P.lidL.visible = P.lidR.visible = blinking;
+  }
   if (three3d.mode === 'head' && three3d.parts.eyeL) {
     const blinking = (t % 3.2) > 3.05;
     const s = blinking ? 0.15 : 1;
     three3d.parts.eyeL.scale.y = s;
     three3d.parts.eyeR.scale.y = s;
-    three3d.parts.mouth.scale.y = (AVATAR_MODE === 'speaking') ? 1 + Math.abs(Math.sin(t * 11)) * 3.2 : 1;
+    three3d.parts.mouth.scale.y = speaking ? 1 + Math.abs(Math.sin(t * 11)) * 3.2 : 1;
   }
 
   const targetZ = AVATAR_MODE === 'listening' ? 7.3 : 7.8;
@@ -3202,7 +3324,8 @@ function applyAvatarToHeader() {
     return;
   }
 
-  loadPhotoPlane(activeSrc);
+  if (!customAvatarSrc && preset.kind === 'orb') buildOrb();
+  else loadPhotoPlane(activeSrc, customAvatarSrc ? null : preset);
 }
 
 function renderSettings() {
@@ -3210,7 +3333,7 @@ function renderSettings() {
 
   const grid = document.getElementById('avatarGrid');
   const groups = [
-    { label: '로봇 아바타 선택', list: AVATAR_PRESETS }
+    { label: '아바타 선택', list: AVATAR_PRESETS }
   ];
   grid.innerHTML = groups.map(g => `
     <div class="avatar-grid">
@@ -3236,6 +3359,8 @@ function renderSettings() {
       const a = AVATAR_PRESETS.find(p => p.id === card.dataset.id);
       selectedAvatarId = a.id;
       customAvatarSrc = null;
+      try { localStorage.setItem('avatarId', a.id); } catch (e) {}
+      if (!voiceManual && a.voice) { selectedOpenAIVoice = a.voice; selectedVoiceStyle = a.style; }
       const nameField = document.getElementById('nameField');
       if (!nameField.value || AVATAR_PRESETS.some(p => p.name === nameField.value)) {
         nameField.value = a.name;
@@ -3261,20 +3386,73 @@ document.getElementById('avatarUpload').addEventListener('change', (e) => {
 // 실제 답변에 쓰이는 서버(OpenAI) 음성 중 하나를 고르는 목록입니다.
 // (기기/브라우저에 상관없이 항상 동일하게 들립니다 — 카카오톡 포함)
 const OPENAI_VOICES = [
-  { id: 'nova', label: '노바 — 여성, 밝고 또렷한 목소리 (기본)' },
-  { id: 'shimmer', label: '쉬머 — 여성, 부드러운 목소리' },
-  { id: 'alloy', label: '알로이 — 중성적인 목소리' },
-  { id: 'onyx', label: '오닉스 — 남성, 중저음' },
+  { id: 'coral', label: '코랄 — 여성, 따뜻하고 부드러운 상담 톤' },
+  { id: 'nova', label: '노바 — 여성, 밝고 또렷한 목소리' },
+  { id: 'shimmer', label: '쉬머 — 여성, 차분하고 세련된 목소리' },
+  { id: 'marin', label: '마린 — 여성, 맑고 자연스러운 목소리' },
+  { id: 'sage', label: '세이지 — 여성, 침착하고 지적인 목소리' },
+  { id: 'ballad', label: '발라드 — 여성, 감성적이고 부드러운 목소리' },
+  { id: 'alloy', label: '알로이 — 중성, 균형 잡힌 목소리' },
+  { id: 'verse', label: '버스 — 남성, 표현력 있는 목소리' },
+  { id: 'ash', label: '애쉬 — 남성, 담백하고 믿음직한 목소리' },
   { id: 'echo', label: '에코 — 남성, 또렷한 목소리' },
-  { id: 'fable', label: '페이블 — 남성, 차분한 목소리' },
+  { id: 'fable', label: '페이블 — 남성, 이야기하듯 차분한 목소리' },
+  { id: 'onyx', label: '오닉스 — 남성, 중후한 저음' },
+  { id: 'cedar', label: '시더 — 남성, 깊고 안정적인 목소리' },
 ];
+const VOICE_STYLES = [
+  { id: 'counsel', label: '따뜻한 상담' },
+  { id: 'expert', label: '차분한 전문가' },
+  { id: 'bright', label: '밝고 친근하게' },
+  { id: 'calm', label: '느리고 편안하게' },
+  { id: 'news', label: '또박또박 아나운서' },
+];
+
+async function playVoicePreview(btn, voiceId) {
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = '재생 중…';
+  try {
+    const res = await fetch(`${API_BASE}/api/tts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: '안녕하세요, 담당 비서입니다. 무엇을 도와드릴까요?', voice: voiceId, style: selectedVoiceStyle, speed: selectedVoiceSpeed }),
+    });
+    if (res.ok) {
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => URL.revokeObjectURL(url);
+      await audio.play();
+    }
+  } catch (e) { /* 미리듣기 실패는 조용히 무시 */ }
+  btn.disabled = false; btn.textContent = original;
+}
 
 function renderVoiceList() {
   const wrap = document.getElementById('voiceList');
   const hint = document.getElementById('voiceHint');
-  hint.textContent = '실제 답변 음성에 사용할 목소리를 선택해주세요. 어떤 기기·브라우저(카카오톡 포함)에서도 동일하게 들립니다.';
+  hint.textContent = '목소리·말투·속도를 골라 미리듣기로 확인하세요. 어떤 기기·브라우저(카카오톡 포함)에서도 동일하게 들립니다.';
 
-  wrap.innerHTML = '';
+  wrap.innerHTML = `
+    <div class="voice-ctl">
+      <label>말투
+        <select id="voiceStyleSel">${VOICE_STYLES.map(v => `<option value="${v.id}"${v.id === selectedVoiceStyle ? ' selected' : ''}>${v.label}</option>`).join('')}</select>
+      </label>
+      <label>속도 <b id="voiceSpeedVal">${selectedVoiceSpeed.toFixed(2)}x</b>
+        <input type="range" id="voiceSpeedRange" min="0.8" max="1.3" step="0.05" value="${selectedVoiceSpeed}">
+      </label>
+    </div>`;
+  wrap.querySelector('#voiceStyleSel').addEventListener('change', (e) => {
+    selectedVoiceStyle = e.target.value; voiceManual = true;
+    try { localStorage.setItem('ttsStyle', selectedVoiceStyle); localStorage.setItem('ttsManual', '1'); } catch (er) {}
+  });
+  const rng = wrap.querySelector('#voiceSpeedRange');
+  rng.addEventListener('input', () => { document.getElementById('voiceSpeedVal').textContent = parseFloat(rng.value).toFixed(2) + 'x'; });
+  rng.addEventListener('change', () => {
+    selectedVoiceSpeed = parseFloat(rng.value); voiceManual = true;
+    try { localStorage.setItem('ttsSpeed', String(selectedVoiceSpeed)); localStorage.setItem('ttsManual', '1'); } catch (er) {}
+  });
+
   OPENAI_VOICES.forEach(v => {
     const row = document.createElement('div');
     row.className = 'voice-row' + (selectedOpenAIVoice === v.id ? ' selected' : '');
@@ -3283,30 +3461,11 @@ function renderVoiceList() {
       <button class="preview-btn" type="button">미리듣기</button>
     `;
     row.querySelector('input').addEventListener('change', () => {
-      selectedOpenAIVoice = v.id;
-      try { localStorage.setItem('ttsVoice', v.id); } catch (e) {}
+      selectedOpenAIVoice = v.id; voiceManual = true;
+      try { localStorage.setItem('ttsVoice', v.id); localStorage.setItem('ttsManual', '1'); } catch (e) {}
       renderVoiceList();
     });
-    row.querySelector('.preview-btn').addEventListener('click', async (ev) => {
-      const btn = ev.currentTarget;
-      const original = btn.textContent;
-      btn.disabled = true; btn.textContent = '재생 중…';
-      try {
-        const res = await fetch(`${API_BASE}/api/tts`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: '안녕하세요, 담당 비서입니다. 무엇을 도와드릴까요?', voice: v.id }),
-        });
-        if (res.ok) {
-          const blob = await res.blob();
-          const url = URL.createObjectURL(blob);
-          const audio = new Audio(url);
-          audio.onended = () => URL.revokeObjectURL(url);
-          await audio.play();
-        }
-      } catch (e) { /* 미리듣기 실패는 조용히 무시 */ }
-      btn.disabled = false; btn.textContent = original;
-    });
+    row.querySelector('.preview-btn').addEventListener('click', (ev) => playVoicePreview(ev.currentTarget, v.id));
     wrap.appendChild(row);
   });
 }
