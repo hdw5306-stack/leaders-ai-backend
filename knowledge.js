@@ -1002,18 +1002,144 @@ async function fetchBuffer(url, opts = {}) {
 }
 const isPdfBuf = (b) => b && b.length > 1000 && b.subarray(0, 1024).toString('latin1').includes('%PDF');
 
-// 약관 이름으로 분류 추정
+// ── 수집 기준: 필요한 종류의 약관만, 최근 N년 것만 ──
+const COLLECT_CATEGORIES = ['종신(일반)', '종신(변액)', '연금(일반)', '연금(변액)', '건강보험', '정기보험', '어린이보험', '치아보험', '간병·치매보험', '실손의료보험', '저축보험', '기타'];
+const DEFAULT_COLLECT_CATEGORIES = ['종신(일반)', '종신(변액)', '연금(일반)', '연금(변액)', '건강보험', '정기보험', '어린이보험', '치아보험', '간병·치매보험'];
+
+// 약관 이름으로 분류(규칙). 애매하면 '기타'로 두고, 나중에 AI가 한 번 더 판단합니다.
 function guessCategory(title) {
   const t = String(title || '');
-  const rules = [['변액연금', /변액.*연금|연금.*변액/], ['변액보험', /변액/], ['일반연금', /연금/], ['종신보험', /종신/], ['정기보험', /정기/],
-    ['암보험', /암/], ['어린이보험', /어린이|자녀|태아|키즈/], ['간병·치매보험', /간병|치매/], ['실손의료보험', /실손|실비/],
-    ['저축보험', /저축|적립|교육/], ['건강·질병보험', /건강|질병|CI|상해|의료|입원|수술|치아|운전자|여행/]];
+  const rules = [
+    ['치아보험', /치아|치과|덴탈/], ['어린이보험', /어린이|자녀|태아|키즈|아이사랑/], ['간병·치매보험', /간병|치매/],
+    ['연금(변액)', /변액.*연금|연금.*변액/], ['연금(일반)', /연금/], ['종신(변액)', /변액.*종신|종신.*변액|변액유니버셜|변액/], ['종신(일반)', /종신/],
+    ['정기보험', /정기/], ['실손의료보험', /실손|실비/], ['저축보험', /저축|적립|교육보험/],
+    ['건강보험', /건강|질병|암|CI|GI|상해|종합|입원|수술|의료|통합|보장|진단|운전자|간편/],
+  ];
   for (const [name, re] of rules) if (re.test(t)) return name;
   return '기타';
 }
 
+// 약관 이름에 들어 있는 날짜(개정·시행 시점) 읽기: 20260701 / 260401 / (26.10) / ...2607 형태. 못 읽으면 null.
+function extractDocDate(title) {
+  const t = String(title || '');
+  const mk = (y, m, d) => (y >= 2000 && y <= 2099 && m >= 1 && m <= 12 && d >= 1 && d <= 31) ? new Date(Date.UTC(y, m - 1, d)) : null;
+  let m = t.match(/(?:^|\D)(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)/);
+  if (m && mk(+m[1], +m[2], +m[3])) return mk(+m[1], +m[2], +m[3]);
+  m = t.match(/(?:^|\D)(\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)/);
+  if (m && +m[1] >= 15 && +m[1] <= 35) return mk(2000 + +m[1], +m[2], +m[3]);
+  m = t.match(/\((\d{2})\.(\d{1,2})\)/);
+  if (m && +m[1] >= 15 && +m[1] <= 35) return mk(2000 + +m[1], +m[2], 1);
+  m = t.match(/(?:^|\D)(\d{2})(0[1-9]|1[0-2])(?!\d)/);
+  if (m && +m[1] >= 15 && +m[1] <= 35) return mk(2000 + +m[1], +m[2], 1);
+  return null;
+}
+
+// 상품 이름만 보고 AI가 분류를 보완합니다(규칙으로 '기타'가 된 것만, 이름만 보내므로 비용이 거의 없음).
+async function aiClassifyTitles(titles) {
+  const out = new Map();
+  if (!process.env.OPENAI_API_KEY || !titles.length) return out;
+  for (let st = 0; st < titles.length; st += 40) {
+    const part = titles.slice(st, st + 40);
+    try {
+      const r = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: DISTILL_MODEL, response_format: { type: 'json_object' }, temperature: 0, max_tokens: 1500,
+          messages: [
+            { role: 'system', content: `보험 약관(상품) 이름을 아래 분류 중 하나로 나누세요: ${COLLECT_CATEGORIES.join(', ')}.\n- 종신/연금/건강/정기/어린이/치아/간병·치매가 아니고 재해·교통·여행·펫·자동차·화재·배상책임·단체·보증 같은 것은 "기타".\n- 이름만으로 알 수 없으면 "기타".\nJSON으로만 답하세요: {"items":[{"i":번호,"category":"분류"}]}` },
+            { role: 'user', content: part.map((t, i) => `${i}. ${t}`).join('\n') },
+          ],
+        }),
+      });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const arr = JSON.parse(j.choices?.[0]?.message?.content || '{}').items || [];
+      for (const x of arr) if (part[x.i] != null && COLLECT_CATEGORIES.includes(x.category)) out.set(part[x.i], x.category);
+    } catch (e) { /* 실패하면 규칙 결과('기타') 유지 */ }
+  }
+  return out;
+}
+
+// 수집 대상 고르기: 분류(규칙+AI 보완)와 날짜 기준 적용
+async function planCollect(items, opts = {}) {
+  const years = opts.years == null ? 3 : Number(opts.years);
+  const cats = new Set(Array.isArray(opts.categories) && opts.categories.length ? opts.categories : DEFAULT_COLLECT_CATEGORIES);
+  const cutoff = years > 0 ? new Date(Date.now() - years * 365.25 * 24 * 3600 * 1000) : null;
+  const rows = items.map(it => ({ ...it, category: guessCategory(it.title), docDate: extractDocDate(it.title) }));
+  const unknown = [...new Set(rows.filter(r => r.category === '기타').map(r => r.title))];
+  if (unknown.length) {
+    const ai = await aiClassifyTitles(unknown);
+    rows.forEach(r => { if (r.category === '기타' && ai.has(r.title)) r.category = ai.get(r.title); });
+  }
+  const eligible = [], excluded = { old: [], category: [] };
+  for (const r of rows) {
+    if (!cats.has(r.category)) { excluded.category.push(r); continue; }
+    if (cutoff && r.docDate && r.docDate < cutoff) { excluded.old.push(r); continue; }
+    eligible.push(r);
+  }
+  return { eligible, excluded, cutoff };
+}
+
 const absUrl = (href, base) => { try { return new URL(decodeEntities(href), base).href; } catch (e) { return null; } };
 const cleanName = (s) => decodeEntities(String(s || '')).replace(/<[^>]+>/g, ' ').replace(/\.pdf$/i, '').replace(/\s+/g, ' ').trim();
+
+
+// ── 수집기 공용 도우미 (교보·동양·라이나처럼 화면이 스크립트로 목록을 불러오는 곳용) ──
+function bufText(r) {
+  const head = r.buf.subarray(0, 3000).toString('latin1');
+  let cs = ((r.type || '').match(/charset=([\w-]+)/i) || head.match(/charset=["']?([\w-]+)/i) || [])[1] || 'utf-8';
+  cs = cs.toLowerCase();
+  if (/^(ks_c_5601|ksc5601|euc_kr|x-windows-949|ms949|cp949|euc-kr)/.test(cs)) cs = 'euc-kr';
+  try { return new TextDecoder(cs).decode(r.buf); } catch (e) { return r.buf.toString('utf8'); }
+}
+async function getPage(url, opts = {}) {
+  const r = await fetchBuffer(url, { timeout: 40000, ...opts });
+  const cookie = '';
+  return { ...r, text: bufText(r), cookie };
+}
+const snp = (t, n = 300) => String(t || '').replace(/\s+/g, ' ').slice(0, n);
+// 응답 JSON 안에서 .pdf 파일명을 가진 항목을 모두 찾고, 같은 항목의 상품명을 제목으로 씁니다.
+function pickTitle(o) {
+  const keys = Object.keys(o).filter(k => typeof o[k] === 'string' && o[k].trim());
+  const k = keys.find(k => /(prod|prd|gd|goods|ins|item|상품).*(nm|name|title)|^(nm|name|title|subject)$/i.test(k))
+    || keys.find(k => /(nm|name|title)$/i.test(k) && !/file|path|url|reg|user|date/i.test(k));
+  return k ? String(o[k]).trim() : '';
+}
+function collectPdfRefs(node, out = [], depth = 0) {
+  if (depth > 12 || node == null) return out;
+  if (Array.isArray(node)) { node.forEach(n => collectPdfRefs(n, out, depth + 1)); return out; }
+  if (typeof node === 'object') {
+    const title = pickTitle(node);
+    for (const [k, v] of Object.entries(node)) {
+      if (typeof v === 'string' && /\.pdf(\?|$|#)/i.test(v)) out.push({ key: k, file: v.trim(), title, row: node });
+    }
+    for (const v of Object.values(node)) if (v && typeof v === 'object') collectPdfRefs(v, out, depth + 1);
+  }
+  return out;
+}
+const isTermsRef = (ref) => {
+  const hay = `${ref.key} ${ref.file} ${ref.title}`;
+  if (/요약서|사업방법서|산출방법서|운용설명서|상품설명서|판매자료|brochure/i.test(`${ref.key} ${ref.file}`)) return false;
+  return /약관|yak|terms|clause|YK|rule|gyeyak/i.test(hay);
+};
+const fileBase = (f) => { try { return decodeURIComponent(String(f).split(/[?#]/)[0].split('/').pop()); } catch (e) { return String(f).split('/').pop(); } };
+// 화면·스크립트 안의 함수 정의를 찾아 보여줍니다(다운로드 방식 파악용).
+async function findFuncDefs(html, base, names) {
+  const srcs = [...String(html).matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map(m => absUrl(m[1], base)).filter(u => u && !/jquery|google|gtag|analytics|kakao|naver|facebook|polyfill/i.test(u)).slice(0, 30);
+  const defs = {};
+  for (const src of [null, ...srcs]) {
+    if (names.every(n => defs[n])) break;
+    const txt = src ? bufText(await fetchBuffer(src, { timeout: 20000 })) : String(html);
+    for (const n of names) {
+      if (defs[n]) continue;
+      const m = txt.match(new RegExp('function\\s+' + n + '\\s*\\([^)]*\\)\\s*\\{[\\s\\S]{0,1200}')) || txt.match(new RegExp(n + '\\s*[:=]\\s*function\\s*\\([^)]*\\)\\s*\\{[\\s\\S]{0,1200}'));
+      if (m) defs[n] = m[0].replace(/\s+/g, ' ').slice(0, 900);
+    }
+  }
+  return defs;
+}
+const uniqBy = (arr, f) => { const seen = new Set(); return arr.filter(x => { const k = f(x); if (seen.has(k)) return false; seen.add(k); return true; }); };
 
 // 보험사별 수집기: list()는 [{title, url, headers?}]를 돌려줍니다 (약관 PDF만).
 const COLLECTORS = {
@@ -1088,6 +1214,159 @@ const COLLECTORS = {
       return out;
     },
   },
+
+  '교보생명': {
+    async list() {
+      const host = 'https://www.kyobo.com';
+      const page = host + '/dgt/web/product-official/all-product/search';
+      const pg = await getPage(page);
+      if (!pg.ok) throw new Error(`목록 화면을 열지 못했습니다 (HTTP ${pg.status} ${pg.error || ''})`);
+      const jsonH = { Referer: page, Origin: host, 'X-Requested-With': 'XMLHttpRequest', Accept: 'application/json, text/plain, */*' };
+      const api = host + '/dtc/product-official/find-allProductSearch';
+      const tried = [];
+      const variants = (n) => [
+        { m: 'POST', h: { ...jsonH, 'Content-Type': 'application/json' }, b: JSON.stringify({ pageNo: n, pageIndex: n, currentPage: n, pageSize: 100, rowCount: 100, saleYn: 'Y', searchWord: '', keyword: '' }) },
+        { m: 'POST', h: { ...jsonH, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }, b: `pageNo=${n}&pageIndex=${n}&currentPage=${n}&pageSize=100&saleYn=Y&searchWord=` },
+        { m: 'GET', url: `${api}?pageNo=${n}&pageSize=100&saleYn=Y&searchWord=`, h: jsonH },
+      ];
+      let refs = [], working = null, lastJson = null;
+      for (const v of variants(1)) {
+        const r = await getPage(v.url || api, { method: v.m, headers: v.h, body: v.m === 'POST' ? v.b : undefined });
+        let j = null; try { j = JSON.parse(r.text); } catch (e) {}
+        tried.push(`${v.m} ${r.status} ${snp(r.text, 160)}`);
+        if (j) { lastJson = j; const f = collectPdfRefs(j); if (f.length) { refs = f; working = v; break; } }
+      }
+      // 첫 쪽에서 파일이 바로 보이면 다음 쪽도 이어서 읽습니다.
+      if (working) {
+        for (let n = 2; n <= 40; n++) {
+          const v = variants(n)[variants(1).indexOf(variants(1).find(x => x.m === working.m && x.h['Content-Type'] === working.h['Content-Type'])) ] || working;
+          const r = await getPage(v.url || api, { method: v.m, headers: v.h, body: v.m === 'POST' ? v.b : undefined });
+          let j = null; try { j = JSON.parse(r.text); } catch (e) {}
+          const f = j ? collectPdfRefs(j) : [];
+          const fresh = f.filter(x => !refs.some(y => y.file === x.file));
+          if (!fresh.length) break;
+          refs.push(...fresh);
+        }
+      }
+      if (!refs.length) {
+        // 목록에는 상품만 있고 파일은 상세 조회에 있을 수 있어, 첫 상품의 상세를 한 번 열어 구조를 확인합니다.
+        let detail = '';
+        if (lastJson) {
+          const rows = []; (function walk(x, d) { if (d > 6 || x == null) return; if (Array.isArray(x)) { if (x.length && typeof x[0] === 'object') rows.push(...x.slice(0, 1)); x.forEach(y => walk(y, d + 1)); } else if (typeof x === 'object') Object.values(x).forEach(y => walk(y, d + 1)); })(lastJson, 0);
+          if (rows[0]) {
+            const body = JSON.stringify(rows[0]);
+            const r = await getPage(host + '/dtc/product-official/find-allProductSearchDetail', { method: 'POST', headers: { ...jsonH, 'Content-Type': 'application/json' }, body });
+            detail = `상세 ${r.status} ${snp(r.text, 200)} | 첫 항목 ${snp(body, 200)}`;
+            let j = null; try { j = JSON.parse(r.text); } catch (e) {}
+            if (j) refs = collectPdfRefs(j);
+          }
+        }
+        if (!refs.length) {
+          const defs = await findFuncDefs(pg.text, page, ['fileDownload']);
+          throw new Error(`교보생명 목록에서 파일을 찾지 못했습니다. [시도] ${tried.join(' || ')} ${detail} [fileDownload] ${defs.fileDownload || '(못 찾음)'}`.slice(0, 1800));
+        }
+      }
+      return uniqBy(refs.filter(isTermsRef), x => x.file).map(x => ({
+        title: cleanName(`${x.title || ''} ${fileBase(x.file)}`),
+        url: /^https?:/i.test(x.file) ? x.file : `${host}/file/ajax/download?fName=${encodeURIComponent(x.file)}`,
+        alt: `${host}/file/ajax/download?fName=${x.file}`,
+        headers: { Referer: page },
+      }));
+    },
+  },
+  '동양생명': {
+    async list() {
+      const host = 'https://pbano.myangel.co.kr';
+      const page = host + '/paging/WE_AC_WEPAAP020100L';
+      const pg = await getPage(page);
+      if (!pg.ok) throw new Error(`목록 화면을 열지 못했습니다 (HTTP ${pg.status} ${pg.error || ''})`);
+      // 목록 본문은 별도 화면(JSP)을 불러와 채워집니다.
+      const cands = [host + '/notice/product/WE_PA_AP_01_00_00.jsp', host + '/notice/product/WE_PA_AP_01_00_00.jsp?saleYn=Y', page];
+      let html = '', used = '';
+      const tried = [];
+      for (const u of cands) {
+        for (const m of ['POST', 'GET']) {
+          const r = await getPage(u, { method: m, headers: { Referer: page, 'X-Requested-With': 'XMLHttpRequest', ...(m === 'POST' ? { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' } : {}) }, body: m === 'POST' ? 'currentPage=1&saleYn=Y' : undefined });
+          tried.push(`${m} ${u.replace(host, '')} ${r.status} ${r.buf.length}B`);
+          if (/Filedownload|MasFiledownload/.test(r.text)) { html = r.text; used = u; break; }
+        }
+        if (html) break;
+      }
+      if (!html) throw new Error(`동양생명 목록에서 다운로드 링크를 찾지 못했습니다. [시도] ${tried.join(' | ')} [화면 일부] ${snp(pg.text, 300)}`.slice(0, 1500));
+      const defs = await findFuncDefs(pg.text, page, ['Filedownload', 'MasFiledownload']);
+      // 함수 안에서 보내는 주소·항목 이름을 읽어 다운로드 요청 양식을 만듭니다.
+      const defText = `${defs.Filedownload || ''} ${defs.MasFiledownload || ''}`;
+      const ep = (defs.Filedownload || '').match(/["'](\/[^"']*(?:down|file)[^"']*\.(?:jsp|do))/i) || defText.match(/["'](\/[^"']*(?:down|file)[^"']*\.(?:jsp|do))/i);
+      const endpoint = ep ? host + ep[1] : null;
+      const names = [...(defs.Filedownload || '').matchAll(/(?:\.|\[["'])(\w+)(?:["']\])?\.value\s*=/g)].map(m => m[1]);
+      const out = [];
+      const re = /<a\b[^>]*?(Filedownload|MasFiledownload)\s*\(([^)]*)\)[^>]*>([\s\S]*?)<\/a>/gi;
+      let m;
+      const clean = decodeEntities(html);
+      while ((m = re.exec(clean))) {
+        const kind = m[1], args = [...m[2].matchAll(/['"]([^'"]*)['"]/g)].map(x => x[1]);
+        const label = cleanName(m[3]);
+        const around = clean.slice(Math.max(0, m.index - 700), m.index).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        if (!/약관/.test(label) || /요약서|사업방법서/.test(label)) continue;
+        const prodName = around.split(/\s{2,}|\s(?=무배당|\(무\))/).pop().slice(-80) || around.slice(-80);
+        const title = cleanName(`${prodName} ${kind === 'Filedownload' ? fileBase(args[2] || args[1] || '') : ''}`).trim() || '동양생명 약관';
+        const forms = [];
+        if (endpoint) {
+          if (names.length && args.length) forms.push(Object.fromEntries(names.map((n, i) => [n, args[i + (args[0] === '_N' ? 1 : 0)] || ''])));
+          if (kind === 'Filedownload') {
+            forms.push({ filePath: args[1], fileName: args[2], fileRealName: args[3] || args[2], filepath: args[1], filename: args[2] });
+          } else forms.push({ fileGrpId: args[1] || args[0], fileGrpID: args[1] || args[0] });
+        }
+        out.push({ title, url: endpoint ? `${endpoint} (${args.slice(1).join(',')})` : '(주소 미확인)', headers: { Referer: page },
+          post: endpoint ? { url: endpoint, forms } : undefined,
+          alt: endpoint && kind === 'Filedownload' ? `${endpoint}?${new URLSearchParams({ filePath: args[1], fileName: args[2], fileRealName: args[3] || args[2] })}` : undefined,
+          diag: `[Filedownload 정의] ${defs.Filedownload || '못 찾음'} [MasFiledownload 정의] ${defs.MasFiledownload || '못 찾음'}` });
+      }
+      if (!out.length) throw new Error(`동양생명 목록(${used.replace(host, '')})에서 약관 링크를 찾지 못했습니다. [링크 글자 예] ${snp(clean.match(/Filedownload[\s\S]{0,200}/)?.[0], 200)}`);
+      return uniqBy(out, x => x.url + x.title);
+    },
+  },
+  '라이나생명': {
+    async list() {
+      const host = 'https://www.lina.co.kr';
+      const page = host + '/disclosure/product-public-announcement/product-on-sales?key=0';
+      const pg = await getPage(page);
+      if (!pg.ok) throw new Error(`목록 화면을 열지 못했습니다 (HTTP ${pg.status} ${pg.error || ''})`);
+      const html = pg.text;
+      // 1) 화면 안에 이미 있는 PDF 주소
+      let refs = [];
+      const found = [...new Set(html.match(/[^"'\s<>()\\]{3,200}\.pdf/gi) || [])];
+      found.forEach(f => refs.push({ key: 'html', file: f.replace(/\\u002F/g, '/'), title: '' }));
+      // 2) 화면이 부르는 데이터 주소(스크립트 조각 안)를 찾아 직접 읽기
+      const chunks = uniqBy([...html.matchAll(/(?:src|href)=["']([^"']*(?:_nuxt|external)[^"']*\.js)["']/gi)].map(m => absUrl(m[1], page)).filter(Boolean), x => x).slice(0, 40);
+      const apiSet = new Set();
+      for (const c of chunks) {
+        const t = bufText(await fetchBuffer(c, { timeout: 20000 }));
+        for (const m of t.matchAll(/["'`]((?:https?:\/\/www\.lina\.co\.kr)?\/(?:api|cms|external|disclosure|ajax)[\w\-\/.]*(?:list|prod|product|disclosure|sale|json|search)[\w\-\/.?=&]*)["'`]/gi)) {
+          if (!/\.(js|css|png|jpg|svg|ico|woff2?)(\?|$)/i.test(m[1])) apiSet.add(m[1].startsWith('http') ? m[1] : host + m[1]);
+        }
+        for (const m of t.matchAll(/["'`]([^"'`\s]{3,160}\.pdf)["'`]/gi)) refs.push({ key: 'js', file: m[1], title: '' });
+      }
+      const tried = [];
+      for (const u of [...apiSet].slice(0, 14)) {
+        for (const q of [u, u + (u.includes('?') ? '&' : '?') + 'key=0']) {
+          const r = await getPage(q, { headers: { Referer: page, Accept: 'application/json, text/plain, */*' } });
+          let j = null; try { j = JSON.parse(r.text); } catch (e) {}
+          tried.push(`${r.status} ${q.replace(host, '')} ${j ? 'JSON' : snp(r.text, 40)}`);
+          if (j) { refs.push(...collectPdfRefs(j)); break; }
+        }
+      }
+      refs = uniqBy(refs.filter(x => !/^(data:|javascript)/i.test(x.file)), x => x.file);
+      if (!refs.length) throw new Error(`라이나생명 화면·스크립트에서 PDF를 찾지 못했습니다. [후보 데이터 주소] ${[...apiSet].slice(0, 8).join(', ') || '없음'} [시도] ${tried.slice(0, 8).join(' | ')}`.slice(0, 1500));
+      // 파일명만 있는 경우(A0289.pdf) 기본 폴더 후보에서 찾습니다.
+      const bases = ['/cms/upload/product/', '/cms/upload/disclosure/', '/upload/', '/cms/upload/'];
+      return refs.map(x => {
+        const abs = /^https?:/i.test(x.file) ? x.file : x.file.startsWith('/') ? host + x.file : null;
+        const name = fileBase(x.file);
+        return { title: cleanName(`라이나 ${x.title || ''} ${name}`), url: abs || host + bases[0] + name, alt: abs ? undefined : host + bases[1] + name, alts: abs ? [] : bases.slice(2).map(b => host + b + name), headers: { Referer: page } };
+      });
+    },
+  },
 };
 
 async function downloadTerms(item) {
@@ -1098,10 +1377,19 @@ async function downloadTerms(item) {
       r = await fetchBuffer(item.post.url, { method: 'POST', body: new URLSearchParams(form).toString(), headers: { ...(item.headers || {}), 'Content-Type': 'application/x-www-form-urlencoded' } });
       if (isPdfBuf(r.buf)) return r;
     }
+    for (const u of [item.alt, ...(item.alts || [])].filter(Boolean)) {
+      const g = await fetchBuffer(u, { headers: item.headers });
+      if (isPdfBuf(g.buf)) return g;
+    }
     return r;
   }
   let r = await fetchBuffer(item.url, { headers: item.headers });
-  if (!isPdfBuf(r.buf) && item.alt) r = await fetchBuffer(item.alt, { headers: item.headers });
+  if (!isPdfBuf(r.buf)) {
+    for (const u of [item.alt, ...(item.alts || [])].filter(Boolean)) {
+      r = await fetchBuffer(u, { headers: item.headers });
+      if (isPdfBuf(r.buf)) break;
+    }
+  }
   return r;
 }
 
@@ -1111,11 +1399,18 @@ router.post('/collect/test', async (req, res) => {
   const col = COLLECTORS[company];
   if (!col) return res.status(400).json({ error: '아직 이 보험사의 수집기가 없습니다.' });
   try {
-    const items = await col.list();
-    const out = { company, found: items.length, samples: items.slice(0, 5).map(x => `${x.title} → ${x.url}`) };
-    if (items.length) {
-      const r = await downloadTerms(items[0]);
-      out.first = { title: items[0].title, status: r.status, bytes: r.buf.length, isPdf: isPdfBuf(r.buf), error: r.error || null, head: isPdfBuf(r.buf) ? '' : r.buf.subarray(0, 120).toString('utf8').replace(/\s+/g, ' ') };
+    const all = await col.list();
+    const plan = await planCollect(all, { years: req.body?.years, categories: req.body?.categories });
+    const fmt = (r) => `${r.title}  [${r.category}${r.docDate ? ' · ' + r.docDate.toISOString().slice(0, 7) : ''}]`;
+    const out = {
+      company, found: all.length, eligible: plan.eligible.length, excludedOld: plan.excluded.old.length, excludedCategory: plan.excluded.category.length,
+      samples: plan.eligible.slice(0, 6).map(fmt),
+      skippedSamples: [...plan.excluded.category.slice(0, 4).map(r => '분류 제외: ' + fmt(r)), ...plan.excluded.old.slice(0, 3).map(r => '기간 제외: ' + fmt(r))],
+    };
+    const first = plan.eligible[0] || all[0];
+    if (first) {
+      const r = await downloadTerms(first);
+      out.first = { title: first.title, status: r.status, bytes: r.buf.length, isPdf: isPdfBuf(r.buf), error: r.error || null, head: isPdfBuf(r.buf) ? '' : r.buf.subarray(0, 120).toString('utf8').replace(/\s+/g, ' '), url: first.url, diag: isPdfBuf(r.buf) ? '' : (first.diag || '') };
       if (out.first.isPdf) {
         try { const pages = await extractPdfPages(r.buf); out.first.pages = pages.length; out.first.chars = pages.reduce((n, p) => n + p.text.length, 0); } catch (e) { out.first.extractError = e.message; }
       }
@@ -1124,13 +1419,15 @@ router.post('/collect/test', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-async function runCollectJob(job, { company, limit, userId }) {
+async function runCollectJob(job, { company, limit, userId, years, categories }) {
   const col = COLLECTORS[company];
   try {
     job.status = 'listing';
-    const items = await col.list();
+    const all = await col.list();
+    const plan = await planCollect(all, { years, categories });
+    const items = plan.eligible;
     job.total = items.length;
-    job.log.push(`목록 ${items.length}건을 찾았습니다.`);
+    job.log.push(`목록 ${all.length}건 중 대상 ${items.length}건 (분류 제외 ${plan.excluded.category.length}건, 기간 제외 ${plan.excluded.old.length}건)${plan.cutoff ? ' · 기준: ' + plan.cutoff.toISOString().slice(0, 7) + ' 이후' : ''}`);
     let handled = 0;
     for (const it of items) {
       if (job.cancel) break;
@@ -1148,7 +1445,7 @@ async function runCollectJob(job, { company, limit, userId }) {
         const chars = pages.reduce((n, p) => n + p.text.length, 0);
         if (chars < 200) throw new Error('글자를 읽지 못했습니다(스캔본일 수 있음)');
         const entries = pagesToEntries(pages, `${company} ${title}`, '약관원문');
-        const sv = await saveDoc({ sourceType: 'terms', sourceName: `약관 · ${company} · ${guessCategory(title)}`, title, url: null, notice: null, mode: 'data', entries, userId, company });
+        const sv = await saveDoc({ sourceType: 'terms', sourceName: `약관 · ${company} · ${it.category}`, title, url: null, notice: null, mode: 'data', entries, userId, company });
         job.learned++; job.notes += sv.saved; job.done++;
         job.log.push(`완료: ${title} (${pages.length}쪽, ${sv.saved}조각)`);
       } catch (e) {
@@ -1169,11 +1466,11 @@ router.post('/collect/start', (req, res) => {
   const id = String(++jobSeq);
   const job = { id, status: 'starting', total: 0, done: 0, learned: 0, notes: 0, skipped: 0, failed: 0, log: [], message: '' };
   jobs.set(id, job);
-  runCollectJob(job, { company, limit, userId: req.userId });
+  runCollectJob(job, { company, limit, userId: req.userId, years: req.body?.years, categories: req.body?.categories });
   res.json({ ok: true, jobId: id });
 });
 
-router.get('/collectors', (req, res) => res.json({ items: Object.keys(COLLECTORS) }));
+router.get('/collectors', (req, res) => res.json({ items: Object.keys(COLLECTORS), categories: COLLECT_CATEGORIES, defaults: DEFAULT_COLLECT_CATEGORIES }));
 
 // 이미 올려둔 약관에 보험사 지정 (자료 이름 기준)
 router.post('/terms/company', async (req, res) => {
