@@ -131,37 +131,47 @@ app.post('/api/tts', async (req, res) => {
   if (!process.env.OPENAI_API_KEY) {
     return res.status(500).json({ error: 'OPENAI_API_KEY 환경변수가 설정되지 않았습니다.' });
   }
-  const { text, voice } = req.body || {};
+  const { text, voice, style, speed } = req.body || {};
   if (!text || !text.trim()) {
     return res.status(400).json({ error: '읽어줄 텍스트가 없습니다.' });
   }
-  const allowedVoices = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
+  const allowedVoices = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar'];
   const useVoice = allowedVoices.includes(voice) ? voice : 'nova';
+  const STYLES = {
+    counsel: 'Speak in natural, fluent Korean as a warm, trustworthy insurance counselor. Calm, kind and reassuring, with gentle pauses.',
+    expert: 'Speak in natural, fluent Korean as a calm, authoritative financial expert. Clear, steady and professional.',
+    bright: 'Speak in natural, fluent Korean in a bright, friendly and energetic tone, like a cheerful assistant.',
+    calm: 'Speak in natural, fluent Korean slowly and softly, in a relaxed, soothing tone.',
+    news: 'Speak in natural, fluent Korean with crisp, precise articulation like a professional announcer.',
+  };
+  const instructions = STYLES[style] || STYLES.counsel;
+  const sp = Math.min(1.3, Math.max(0.8, Number(speed) || 1));
+  const input = text.slice(0, 1500);
+  const primary = process.env.TTS_MODEL || 'gpt-4o-mini-tts';
 
+  // 1순위: 고급 음성 모델(말투 지시·속도) → 실패하면 속도/지시 없이 → 그래도 안 되면 기본 tts-1
+  const attempts = [
+    { model: primary, voice: useVoice, input, instructions, speed: sp, response_format: 'mp3' },
+    { model: primary, voice: useVoice, input, instructions, response_format: 'mp3' },
+    { model: 'tts-1', voice: ['alloy', 'echo', 'fable', 'nova', 'onyx', 'shimmer'].includes(useVoice) ? useVoice : 'nova', input, speed: sp, response_format: 'mp3' },
+  ];
   try {
-    const openaiRes = await fetch('https://api.openai.com/v1/audio/speech', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'tts-1',
-        voice: useVoice,
-        input: text.slice(0, 1000), // 답변이 너무 길면 앞부분만 음성으로 읽어줍니다
-        response_format: 'mp3',
-      }),
-    });
-
-    if (!openaiRes.ok) {
-      const errText = await openaiRes.text();
-      console.error('TTS API 오류:', errText);
-      return res.status(502).json({ error: '음성 합성 서비스 호출에 실패했습니다.' });
+    let lastErr = '';
+    for (const body of attempts) {
+      const openaiRes = await fetch('https://api.openai.com/v1/audio/speech', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (openaiRes.ok) {
+        const arrayBuffer = await openaiRes.arrayBuffer();
+        res.set('Content-Type', 'audio/mpeg');
+        return res.send(Buffer.from(arrayBuffer));
+      }
+      lastErr = (await openaiRes.text()).slice(0, 300);
+      console.error(`TTS 실패(${body.model}):`, lastErr);
     }
-
-    const arrayBuffer = await openaiRes.arrayBuffer();
-    res.set('Content-Type', 'audio/mpeg');
-    res.send(Buffer.from(arrayBuffer));
+    return res.status(502).json({ error: '음성 합성 서비스 호출에 실패했습니다.' });
   } catch (err) {
     console.error('TTS 처리 중 오류:', err);
     res.status(500).json({ error: '서버 내부 오류' });
@@ -316,60 +326,199 @@ async function loadProductDocs(message) {
 // 찾을지, 일반 지식으로 답할지는 AI가 스스로 판단합니다.
 // 메시지에 URL(블로그/홈페이지 주소)이 포함되어 있으면, 그 페이지 내용을
 // 직접 불러와 참고자료로 함께 제공해서 요약·질의응답이 가능하게 합니다.
+// ── 개인정보 가리기 (상담 코칭·롤플레이는 고객 이야기가 외부 AI로 가므로 먼저 마스킹) ──
+function maskPII(t) {
+  return String(t || '')
+    .replace(/\b\d{6}\s?[-–]\s?[1-4]\d{6}\b/g, '[주민번호]')
+    .replace(/\b0\d{1,2}[-.\s]?\d{3,4}[-.\s]?\d{4}\b/g, '[전화번호]')
+    .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[이메일]')
+    .replace(/\b\d{3,6}[-\s]\d{2,6}[-\s]\d{2,8}(?:[-\s]\d{1,4})?\b/g, '[번호]');
+}
+
+// ── 질문 분류: 일반 / 보험 / 상담코칭 + 최신정보(웹검색) 필요 여부 ───────────
+// 가벼운 모델로 한 번 판단합니다. 실패하면 키워드로 대신 판단합니다.
+const COACH_HINT = /고객(이|은|님이|이랑|한테|에게)|상담.*(스킬|방법|멘트|화법)|거절|반론|설득|클로징|"[^"]{4,}"라고|라고 (했|하|말)|생각해.?볼게|비싸|부담|남편|아내|배우자.*(상의|의논)|심리/;
+const INS_HINT = /보험|약관|특약|면책|보장|청구|지급|진단비|수술비|실손|종신|연금|암|보험료|설계|손해사정|담보|갱신|환급|해지|계약자|피보험/;
+const WEB_HINT = /검색|인터넷|뉴스|최신|최근|오늘|지금|현재|날씨|시세|환율|주가|순위|결과|일정|언제까지|몇\s*위|요즘|트렌드/;
+async function classifyIntent(message, history) {
+  const fallback = () => ({
+    mode: COACH_HINT.test(message) && !/약관|면책|진단비/.test(message) ? 'coaching' : INS_HINT.test(message) ? 'insurance' : 'general',
+    needWeb: WEB_HINT.test(message),
+  });
+  try {
+    const ctx = (history || []).slice(-4).map(h => `${h.role === 'user' ? '사용자' : '비서'}: ${String(h.content).slice(0, 200)}`).join('\n');
+    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: process.env.CLASSIFY_MODEL || 'gpt-4o-mini',
+        response_format: { type: 'json_object' },
+        max_tokens: 60,
+        temperature: 0,
+        messages: [
+          { role: 'system', content:
+            '사용자 질문을 분류해 JSON으로만 답하세요: {"mode":"general|insurance|coaching","needWeb":true|false}\n' +
+            '- insurance: 보험 상품·약관·보장·청구·보험사·보험 제도/영업 실무 지식 질문\n' +
+            '- coaching: 설계사가 고객 상담 상황·고객 발언을 알려주며 대응법·화법·심리 파악·상담 스킬 조언을 구하는 경우\n' +
+            '- general: 그 밖의 모든 것(잡담, 게임, 상식, 글쓰기, 번역, 계산, 코딩, 날씨, 시사 등)\n' +
+            '- needWeb: 오늘/현재/최신 정보(날씨, 뉴스, 시세, 환율, 주가, 스포츠 결과, 최신 제도·상품 소식, 특정 사이트 검색 요청)가 있어야 정확히 답할 수 있으면 true. 상식·글쓰기·계산·약관 해석 등은 false.' },
+          { role: 'user', content: (ctx ? '[직전 대화]\n' + ctx + '\n\n' : '') + '[질문]\n' + message },
+        ],
+      }),
+    });
+    if (!r.ok) return fallback();
+    const d = await r.json();
+    const j = JSON.parse(d.choices?.[0]?.message?.content || '{}');
+    if (!['general', 'insurance', 'coaching'].includes(j.mode)) return fallback();
+    return { mode: j.mode, needWeb: !!j.needWeb };
+  } catch (e) {
+    return fallback();
+  }
+}
+
+const OUTPUT_RULES = `반드시 아래 JSON 형식으로만, 다른 설명 없이 답하세요. reply 안에서는 마크다운 기호(**, #, 백틱)를 쓰지 말고, 필요하면 번호(1. 2.)·줄바꿈·"- " 목록으로 읽기 좋게 정리하세요. 코드는 들여쓰기만 유지해 그대로 적으세요:
+{
+  "reply": "화면에 보여줄 답변 (존댓말, 필요하면 길고 자세하게)",
+  "speech": "음성으로 읽어줄 짧은 한두 문장 요약",
+  "action": null 또는 { "type": "media_list", "titles": ["미디어 DB의 title 값과 정확히 동일한 문자열"] },
+  "used": [활용한 학습 지식창고 자료 번호들 (예: [1, 3]), 없으면 빈 배열]
+}`;
+
+function buildSystemPrompt(mode, { termsDb, claimsDb, mediaDb, extra, wantMedia }) {
+  const today = new Date().toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
+  const base = `당신은 리더스사업부 설계사를 위한 만능 AI 비서입니다. ChatGPT처럼 세상 모든 주제(잡담, 상식, 글쓰기, 번역, 계산, 코딩, 기획, 고민상담, 말놀이, 시사 등)를 자연스럽고 깊이 있게 도와주고, 보험 분야에서는 일반 AI보다 훨씬 전문적으로 답합니다. 오늘 날짜는 ${today}입니다.
+공통 원칙:
+- 주제가 보험이 아니라는 이유로 거절하거나 보험 얘기로 돌리지 마세요. 끝말잇기·스무고개 같은 놀이는 바로 시작하고 앞선 대화를 기억해 이어가세요.
+- 질문이 단순하면 짧게, 복잡하면 충분히 길고 구조적으로 답하세요. 얼버무리지 말고 구체적인 내용·예시·수치로 답하세요.
+- 모르는 것은 지어내지 말고 모른다고 하되, 아는 범위에서 최대한 도우세요.
+- 사용자가 웹페이지 주소를 붙여넣으면 아래 [웹페이지 내용]을 바탕으로 요약·답변하세요.`;
+
+  if (mode === 'roleplay') {
+    return `${base}
+
+[롤플레이 연습 모드]
+설계사의 상담 연습 상대입니다. 규칙:
+- 사용자가 상황(고객 유형·상품·성향)을 말하면 당신은 그 "고객" 역할만 합니다. 상황이 불명확하면 현실적인 고객(예: 40대 직장인, 보험료 부담·불신이 있는 성향)으로 직접 정해 짧게 소개하고 첫 마디를 시작하세요.
+- 고객 대사는 실제 사람처럼 짧고 자연스럽게(1~3문장). 설계사의 말이 좋으면 마음이 조금씩 열리고, 나쁘면(압박·과장·전문용어) 더 방어적으로 반응하세요. 쉽게 계약해 주지 마세요.
+- 사용자가 "종료", "평가", "피드백"이라고 하면 역할을 멈추고 평가합니다: 잘한 점 / 아쉬운 점 / 고객 심리 변화 / 더 나은 멘트 예시 2개 / 100점 만점 점수.
+- 실제 고객 개인정보는 요구하지 마세요. 평가 외에는 설명·훈수를 하지 말고 고객 대사만 하세요.
+${OUTPUT_RULES}`;
+  }
+
+  if (mode === 'coaching') {
+    return `${base}
+
+[상담 코칭 모드] — 설계사가 고객 상황이나 고객의 말을 알려주면, 고객 심리를 읽고 바로 쓸 수 있는 상담 스킬을 코칭하는 전문 상담 코치입니다. 반드시 다음 구조로 답하세요(각 항목 제목은 일반 글자로):
+1. 고객 심리 분석: 현재 심리 상태(불안·불신·가격 부담·미루기·확신 부족·결정권자 부재 등), 말 속에 숨은 진짜 이유, 구매/거절 신호. 고객이 한 말 중 어느 부분에서 그렇게 판단했는지 인용으로 근거를 대세요. 단정하지 말고 "~로 보입니다"로 쓰고, 확인 질문으로 검증하라고 안내하세요.
+2. 지금 해야 할 한 가지: 공감 / 질문 / 설명 / 제안 / 클로징 중 무엇인지와 이유.
+3. 바로 쓸 멘트 3가지: 부드럽게 / 근거를 들어 / 직설적으로 — 실제로 입으로 말할 수 있는 자연스러운 문장으로.
+4. 물어볼 질문 2~3개: 고객의 진짜 니즈를 끌어내는 열린 질문.
+5. 피해야 할 말·행동.
+6. 다음 단계: 다음 연락 시점·방법.
+- 정보가 부족하면 가장 가능성 높은 해석으로 먼저 답한 뒤, 더 정확히 코칭하려면 필요한 정보 1~2가지를 마지막에 물어보세요.
+- 상담 스킬은 아래 [학습 지식창고]에 관련 자료가 있으면 그 내용을 우선 근거로 삼으세요. 과장·압박·불완전판매로 이어질 수 있는 화법(보험료 속이기, 불안 과도하게 조장, 비교 시 허위 설명)은 권하지 마세요. 마지막에 "고객 반응을 바탕으로 한 추정이니 실제 상담에서 확인하며 활용하세요"를 한 줄로 덧붙이세요.
+${extra}
+${OUTPUT_RULES}`;
+  }
+
+  if (mode === 'insurance') {
+    return `${base}
+
+[보험 전문 모드] — 보험 실무 질문입니다. 일반 AI와 차별화되도록 다음을 지키세요:
+- 아래 사내 자료(약관·보상사례·상품자료·학습 지식창고)가 질문과 관련 있으면 이를 최우선 근거로 쓰고, 근거와 일반 지식을 구분해 "자료 기준 / 일반적으로는"처럼 표시하세요. 관련 없으면 무시하고 아는 지식으로 답하세요.
+- 설계사 실무 관점으로 답하세요: 핵심 결론 → 근거(약관·자료) → 고객에게 설명할 때 쉬운 말 → 주의할 점(면책·감액·갱신·고지의무). 불완전판매 소지가 있는 설명은 피하세요.
+- 약관·수치·보험료는 자료에 있는 값만 쓰고, 없으면 "자료에 없음"이라고 하세요. 최종 판단은 실제 계약의 약관·상품설명서 확인이 필요하다고 한 줄 덧붙이세요.
+
+[약관 DB]
+${JSON.stringify(termsDb || [])}
+
+[보상사례 DB]
+${JSON.stringify(claimsDb || [])}
+${wantMedia ? `\n[미디어(영상) DB] — 제목/태그만 있는 목록입니다. 영상을 보여달라고 하면 관련 title을 action.titles 배열에 정확히 그대로 담으세요(하나를 골라 바로 재생하지 말고 후보를 보여주세요). 관련 영상이 없으면 action은 null로 하고 다른 도움 방법을 제안하세요.\n${JSON.stringify(mediaDb || [])}\n` : ''}${extra}
+${OUTPUT_RULES}`;
+  }
+
+  // general
+  return `${base}
+
+[일반 모드] 보험 자료는 사용하지 않습니다. 평범한 ChatGPT처럼 자유롭게, 정확하고 풍부하게 답하세요.${wantMedia ? `\n영상 요청이면 아래 미디어 DB에서 관련 title을 action.titles에 담으세요.\n${JSON.stringify(mediaDb || [])}` : ''}
+${extra}
+${OUTPUT_RULES}`;
+}
+
 app.post('/api/chat', async (req, res) => {
   if (!process.env.OPENAI_API_KEY) {
     return res.status(500).json({ error: 'OPENAI_API_KEY 환경변수가 설정되지 않았습니다.' });
   }
-  const { message, termsDb, claimsDb, mediaDb, history } = req.body || {};
-  if (!message || !message.trim()) {
+  const { message: rawMessage, termsDb, claimsDb, mediaDb, history, mode: uiMode } = req.body || {};
+  if (!rawMessage || !rawMessage.trim()) {
     return res.status(400).json({ error: '질문 내용이 없습니다.' });
   }
-  // 최근 대화 몇 턴을 함께 보내서, 끝말잇기처럼 앞뒤 대화가 이어져야 하는
-  // 경우에도 문맥을 기억하게 합니다. (너무 길어지지 않게 최근 12개만 사용)
-  const safeHistory = Array.isArray(history)
+  let message = rawMessage;
+  // 최근 대화 12개까지 문맥으로 사용
+  let safeHistory = Array.isArray(history)
     ? history
         .filter(h => h && (h.role === 'user' || h.role === 'assistant') && typeof h.content === 'string')
         .slice(-12)
     : [];
 
-  // 메시지에 URL이 있으면 그 페이지 내용을 직접 불러와 참고자료로 추가합니다.
-  let pageContext = '';
+  // 1) 모드 결정: 화면에서 코칭/롤플레이를 직접 켰으면 그대로, 아니면 AI가 분류
   const urlMatch = message.match(/https?:\/\/[^\s)\]]+/i);
+  let mode, needWeb = false;
+  if (uiMode === 'roleplay' || uiMode === 'coaching') {
+    mode = uiMode;
+    needWeb = false;
+  } else if (urlMatch) {
+    mode = INS_HINT.test(message) ? 'insurance' : 'general';
+  } else {
+    const c = await classifyIntent(message, safeHistory);
+    mode = c.mode;
+    needWeb = c.needWeb;
+  }
+  // 고객 이야기가 오가는 모드는 개인정보를 가려서 외부 AI로 보냅니다.
+  if (mode === 'coaching' || mode === 'roleplay') {
+    message = maskPII(message);
+    safeHistory = safeHistory.map(h => ({ role: h.role, content: maskPII(h.content) }));
+  }
+
+  // 2) URL 페이지 내용
+  let pageContext = '';
   if (urlMatch) {
     const targetUrl = urlMatch[0];
     const pageText = await fetchPageText(targetUrl);
     pageContext = pageText
-      ? `\n\n[사용자가 알려준 웹페이지 내용 — 출처: ${targetUrl}]\n${pageText}`
-      : `\n\n[참고: 사용자가 알려준 주소(${targetUrl})를 불러오지 못했습니다 — 로그인이 필요하거나 접속을 차단하는 사이트일 수 있습니다. 이 사실을 사용자에게 솔직히 안내하세요.]`;
+      ? `\n\n[웹페이지 내용 — 출처: ${targetUrl}]\n${pageText}`
+      : `\n\n[참고: 사용자가 알려준 주소(${targetUrl})를 불러오지 못했습니다 — 로그인이 필요하거나 접속을 차단하는 사이트일 수 있습니다. 이 사실을 솔직히 안내하세요.]`;
   }
+  console.log('[채팅] 모드:', mode, '| 웹필요:', needWeb, '| 질문:', message.slice(0, 50));
 
-  // URL이 없고 "검색/찾아줘/최신/뉴스" 같은 표현이 있으면 웹검색을 먼저 합니다.
-  let searchSources = [];
-  console.log('[채팅] 질문:', message.slice(0, 60), '| URL있음:', !!urlMatch, '| 검색조건:', SEARCH_TRIGGER.test(message));
-  // 상품·경쟁력 질문이면 올려둔 월별 상품자료를 먼저 읽게 합니다.
+  // 3) 보험 모드: 월별 상품자료 + 학습 지식창고 / 코칭 모드: 학습 지식창고(상담 스킬 자료)
   let productDocs = [];
-  if (!urlMatch && PRODUCT_TRIGGER.test(message)) {
+  if (mode === 'insurance' && !urlMatch && PRODUCT_TRIGGER.test(message)) {
     productDocs = await loadProductDocs(message);
   }
-  const explicitWeb = /검색|인터넷|웹|뉴스|블로그|카페/.test(message);
-
-  // 학습 지식창고(블로그·영상 학습 노트, 표 자료)에서 질문과 가까운 내용을 찾습니다.
   let knowledgeHits = [];
-  if (!urlMatch) {
+  if ((mode === 'insurance' || mode === 'coaching') && !urlMatch) {
     try {
       const lastUser = [...safeHistory].reverse().find(h => h.role === 'user');
       const q = message.length < 25 && lastUser ? `${lastUser.content}\n${message}` : message;
-      // 질문에 보험사 이름이 있으면 그 보험사의 약관에서 찾습니다(상품명을 몰라도 되게).
-      const company = knowledge.detectCompany(message) || (message.length < 25 ? knowledge.detectCompany(lastUser && lastUser.content) : null);
-      knowledgeHits = await knowledge.search(q, company ? 8 : 6, 0.3, { company });
+      const company = mode === 'insurance'
+        ? (knowledge.detectCompany(message) || (message.length < 25 ? knowledge.detectCompany(lastUser && lastUser.content) : null))
+        : null;
+      knowledgeHits = await knowledge.search(q, company ? 8 : 6, mode === 'coaching' ? 0.35 : 0.3, { company });
       if (company) console.log('[지식] 보험사 지정 검색:', company);
     } catch (e) {
       console.error('지식 검색 오류:', e.message);
     }
+    console.log('[지식] 찾은 자료:', knowledgeHits.length, knowledgeHits.map(h => `${h.sourceName}:${h.score}`).join(','));
   }
-  console.log('[지식] 찾은 자료:', knowledgeHits.length, knowledgeHits.map(h => `${h.sourceName}:${h.score}`).join(','));
 
-  if (!urlMatch && SEARCH_TRIGGER.test(message) && ((productDocs.length === 0 && knowledgeHits.length === 0) || explicitWeb)) {
+  // 4) 웹검색: AI가 최신 정보가 필요하다고 판단했거나, 명시적으로 검색을 요청한 경우
+  const explicitWeb = /검색|인터넷|웹|뉴스|블로그|카페/.test(message);
+  let searchSources = [];
+  const wantWeb = mode !== 'roleplay' && !urlMatch && (explicitWeb || (needWeb && !(mode === 'insurance' && (productDocs.length || knowledgeHits.length))) ||
+    (SEARCH_TRIGGER.test(message) && productDocs.length === 0 && knowledgeHits.length === 0 && mode !== 'coaching'));
+  if (wantWeb) {
     const found = await webSearch(message, safeHistory);
     if (found && found.text) {
       searchSources = found.sources;
@@ -381,11 +530,11 @@ app.post('/api/chat', async (req, res) => {
 
   const productContext = productDocs.length
     ? `\n\n[월별 보험사 상품자료 — ${productDocs[0].month}, 관리자가 등록한 자료]\n` +
-      `이 질문에는 반드시 아래 자료를 근거로 분석해서 답하세요. 규칙:\n` +
+      `이 질문에는 아래 자료를 근거로 분석해서 답하세요. 규칙:\n` +
       `- 자료에 있는 내용만 사용하고, 없는 보험료·수치·보장은 지어내지 말고 "자료에 없음"이라고 하세요.\n` +
       `- 경쟁력 판단은 보장 범위, 보험료/환급률, 가입 조건, 갱신·면책 등 불리한 조건, 차별점, 설계사 판매 포인트 같은 기준을 먼저 한 줄로 밝히고, 기준별로 비교해 상위 몇 개를 근거와 함께 추천하세요.\n` +
       `- 각 항목에 보험사명과 자료 제목을 함께 적으세요. 마지막에 "참고용 분석이며 최종 판단은 상품설명서·약관 확인 필요"를 한 줄로 덧붙이세요.\n` +
-      `- "정보를 제공할 수 없다"고 답하지 마세요. 자료가 부족하면 부족한 부분만 짚고 있는 자료로 최대한 분석하세요.\n\n` +
+      `- 자료가 부족하면 부족한 부분만 짚고 있는 자료로 최대한 분석하세요.\n\n` +
       productDocs.map(d => `■ ${d.company} — ${d.title}${d.truncated ? ' (일부만 반영)' : ''}\n${d.content}`).join('\n\n')
     : '';
 
@@ -405,40 +554,19 @@ app.post('/api/chat', async (req, res) => {
     : '';
   const heavyContext = productDocs.length > 0 || knowledgeHits.length > 0;
 
-  const systemPrompt = `당신은 설계사가 업무 중에 편하게 쓰는 만능 AI 비서입니다. 보험 업무 도우미이기 이전에, ChatGPT와 똑같이 세상 모든 주제에 대해 자연스럽게 대화하고 도와줄 수 있는 범용 AI입니다. 실제 대화 중 보험 얘기가 나오는 비중은 일부일 뿐이고, 대부분은 평범한 대화·잡담·게임·일반 지식 질문이라고 생각하고 응답하세요.
+  const wantMedia = (mode === 'general' || mode === 'insurance') && /영상|동영상|비디오|보여/.test(message);
+  const systemPrompt = buildSystemPrompt(mode, {
+    termsDb, claimsDb, mediaDb, wantMedia,
+    extra: `${pageContext}${productContext}${knowledgeContext}`,
+  });
 
-가장 중요한 원칙 (절대 어기지 마세요):
-- 질문의 주제가 보험이 아니라는 이유로 "보험 관련 질문만 해주세요", "그런 건 도와드릴 수 없어요", "다른 질문을 해주세요" 같은 식으로 절대 거절하지 마세요. 이런 거절은 명백한 오류입니다.
-- 끝말잇기, 스무고개, 수수께끼 같은 말놀이를 하자고 하면 지금 바로 게임을 시작하세요. 예를 들어 끝말잇기면 당신이 먼저 단어를 하나 제시하고, 이전 대화에서 나온 단어를 기억해서 이어가세요.
-- 날씨, 시사, 계산, 상식, 번역, 글쓰기, 고민상담, 잡담 등 보험과 무관한 어떤 주제든 일반 ChatGPT처럼 적극적으로 도와주세요.
-- 아래 참고자료(약관/보상사례/영상 목록)는 질문이 "실제로" 보험 업무와 관련 있을 때만 사용하고, 그 외에는 완전히 무시하세요. 참고자료에 없는 내용이라고 모른다고 하지 말고, 당신이 알고 있는 일반 지식으로 답하세요.
-- 사용자가 메시지에 웹페이지 주소(URL)를 붙여넣으면, 아래 [사용자가 알려준 웹페이지 내용]에 그 페이지의 실제 글 내용이 들어있습니다. 이걸 바탕으로 요약하거나 질문에 답하세요. 페이지를 불러오지 못했다는 안내가 있으면 솔직히 그렇게 전달하세요.
-
-예시 (반드시 이런 식으로 응답하세요):
-- 사용자: "끝말잇기 하자" → reply: "좋아요! 제가 먼저 할게요. '사과'! 이제 '과'로 시작하는 단어를 말씀해주세요." (보험 얘기를 꺼내지 않음)
-- 사용자: "오늘 날씨 어때?" → 실시간 날씨는 알 수 없으니 그렇게 솔직히 답하고, 일반적인 조언(외출 전 날씨 앱 확인 등)을 자연스럽게 제공 (보험 얘기를 꺼내지 않음)
-- 사용자: "피보나치 수열이 뭐야?" → 일반 지식으로 설명 (보험 얘기를 꺼내지 않음)
-- 사용자: "암보험 면책기간이 어떻게 돼?" → 이때만 아래 약관 DB를 참고해서 답변
-
-아래는 보험 업무 질문일 때만 참고할 사내 데이터입니다.
-
-[약관 DB]
-${JSON.stringify(termsDb || [])}
-
-[보상사례 DB]
-${JSON.stringify(claimsDb || [])}
-
-[미디어(영상) DB] — 실제 영상 파일은 없는 데모이며 제목/태그만 있습니다. 사용자가 영상을 보여달라고 하면, 그중 관련 있는 제목을 1개~여러 개 골라 action.titles 배열에 정확히 그대로 담으세요 (하나를 임의로 골라 바로 재생하지 말고, 후보를 보여줘서 사용자가 직접 고르게 합니다). 관련 있는 영상이 하나도 없으면 action은 null로 하되, 딱딱하게 "준비되어 있지 않다"고만 하지 말고 지금 어떤 영상들이 있는지 안내하거나 다른 방식으로 도와줄 방법을 제안하세요.
-${JSON.stringify(mediaDb || [])}
-${pageContext}${productContext}${knowledgeContext}
-
-반드시 아래 JSON 형식으로만, 다른 설명 없이 답하세요 (마크다운 기호 없이 일반 문장으로):
-{
-  "reply": "화면에 보여줄 답변 (존댓말, 필요시 줄바꿈 포함)",
-  "speech": "음성으로 읽어줄 짧은 한두 문장 요약",
-  "action": null 또는 { "type": "media_list", "titles": ["미디어 DB의 title 값과 정확히 동일한 문자열", "..."] },
-  "used": [답변에 실제로 활용한 학습 지식창고 자료 번호들 (예: [1, 3]), 없으면 빈 배열]
-}`;
+  const model = mode === 'general'
+    ? (process.env.GENERAL_MODEL || 'gpt-4.1')
+    : mode === 'roleplay'
+      ? (process.env.GENERAL_MODEL || 'gpt-4.1')
+      : (process.env.ANALYSIS_MODEL || 'gpt-4.1');
+  const maxTokens = mode === 'roleplay' ? 900 : (heavyContext || mode === 'coaching') ? 2500 : 3000;
+  const temperature = mode === 'insurance' ? 0.3 : mode === 'coaching' ? 0.6 : 0.7;
 
   try {
     const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -448,15 +576,15 @@ ${pageContext}${productContext}${knowledgeContext}
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: heavyContext ? (process.env.ANALYSIS_MODEL || 'gpt-4.1-mini') : 'gpt-4o-mini',
+        model,
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: systemPrompt },
           ...safeHistory.map(h => ({ role: h.role, content: h.content })),
           { role: 'user', content: message },
         ],
-        max_tokens: heavyContext ? 1500 : 700,
-        temperature: heavyContext ? 0.3 : 0.7,
+        max_tokens: maxTokens,
+        temperature,
       }),
     });
 
@@ -499,6 +627,7 @@ ${pageContext}${productContext}${knowledgeContext}
       reply: replyText,
       speech: parsed.speech || parsed.reply || '',
       action: parsed.action || null,
+      mode,
     });
   } catch (err) {
     console.error('AI 상담 처리 중 오류:', err);
