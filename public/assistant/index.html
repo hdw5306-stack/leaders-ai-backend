@@ -1169,9 +1169,10 @@ const PHOTO_AVATARS = [
   { id: 'junghun', name: '정훈', tagline: '품격 있는 멘토', gender: 'male', voice: 'cedar', style: 'expert' },
   { id: 'minjae', name: '민재', tagline: '지적인 분석가', gender: 'male', voice: 'echo', style: 'bright' },
 ];
+const AVATAR_DIR = (location.pathname.indexOf('/assistant') === 0) ? '/assistant/avatars/' : 'avatars/';
 const AVATAR_PRESETS = PHOTO_AVATARS.map(c => ({
   ...c, kind: 'photo', photo: true,
-  img: `avatars/${c.id}.jpg`, thumb: `avatars/${c.id}.jpg`,
+  img: `${AVATAR_DIR}${c.id}.jpg`, thumb: `${AVATAR_DIR}${c.id}.jpg`,
 }));
 (function () {
   const svg = orbSVG();
@@ -3298,10 +3299,23 @@ class Talker {
     if (src === this.src && this.img) { this.drawn = -1; return; }
     this.src = src; this.img = null; this.drawn = -1;
     const im = new Image();
-    im.onload = () => { if (this.src === src) { this.img = im; this.drawn = -1; } };
+    im.onload = () => { if (this.src === src) { this.img = im; this.failed = false; this.drawn = -1; } };
+    im.onerror = () => { if (this.src === src) { this.failed = true; this.drawFallback(); } };
     im.src = src;
   }
+  drawFallback() {
+    const cv = this.canvas, ctx = this.ctx, W = cv.width;
+    const g = ctx.createLinearGradient(0, 0, W, W);
+    g.addColorStop(0, '#1c3560'); g.addColorStop(1, '#0b1a33');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, W);
+    ctx.fillStyle = '#e4cd98'; ctx.textAlign = 'center'; ctx.font = `${W * 0.34}px "Noto Serif KR", serif`;
+    const nm = (typeof ASSISTANT_NAME !== 'undefined' && ASSISTANT_NAME) ? ASSISTANT_NAME.charAt(0) : '비';
+    ctx.fillText(nm, W / 2, W * 0.6);
+    ctx.font = `${W * 0.04}px sans-serif`; ctx.fillStyle = 'rgba(228,205,152,0.8)';
+    ctx.fillText('사진을 불러오지 못했습니다 (avatars 폴더 확인)', W / 2, W * 0.9);
+  }
   update(target) {
+    if (this.failed) return;
     this.level += (target - this.level) * 0.55;
     if (this.level < 0.02) this.level = 0;
     if (this.drawn === this.level) return;
