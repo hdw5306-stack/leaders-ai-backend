@@ -994,7 +994,7 @@ async function fetchBuffer(url, opts = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), opts.timeout || 90000);
   try {
-    const r = await fetch(url, { signal: ctrl.signal, redirect: 'follow', headers: { 'User-Agent': UA, 'Accept-Language': 'ko-KR,ko;q=0.9', ...(opts.headers || {}) } });
+    const r = await fetch(url, { signal: ctrl.signal, redirect: 'follow', method: opts.method || 'GET', body: opts.body, headers: { 'User-Agent': UA, 'Accept-Language': 'ko-KR,ko;q=0.9', ...(opts.headers || {}) } });
     const buf = Buffer.from(await r.arrayBuffer());
     return { ok: r.ok, status: r.status, buf, type: r.headers.get('content-type') || '' };
   } catch (e) { return { ok: false, status: 0, buf: Buffer.alloc(0), error: e.message }; }
@@ -1058,16 +1058,32 @@ const COLLECTORS = {
   '흥국화재': {
     async list() {
       const base = 'https://www.heungkukfire.co.kr/FRW/announce/insGoodsGongsiSale.do';
-      const r = await fetchText(base, { timeout: 40000 });
-      if (!r.ok) throw new Error(`목록 화면을 열지 못했습니다 (HTTP ${r.status} ${r.error || ''})`);
+      // 다운로드가 세션을 요구할 수 있어 목록 화면에서 받은 쿠키를 함께 보냅니다.
+      let html = '', cookie = '';
+      try {
+        const r0 = await fetch(base, { redirect: 'follow', headers: { 'User-Agent': UA, 'Accept-Language': 'ko-KR,ko;q=0.9' } });
+        html = await r0.text();
+        const sc = typeof r0.headers.getSetCookie === 'function' ? r0.headers.getSetCookie() : [];
+        cookie = sc.map(c => c.split(';')[0]).join('; ');
+        if (!r0.ok) throw new Error(`HTTP ${r0.status}`);
+      } catch (e) { throw new Error(`목록 화면을 열지 못했습니다 (${e.message})`); }
       const out = [], seen = new Set();
       const re = /fn_filedownX\(\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]\s*,\s*['"]([^'"]*)['"]/g;
       let m;
-      while ((m = re.exec(decodeEntities(r.text)))) {
-        const dir = m[1], name = cleanName(m[2]), stored = m[3];
+      while ((m = re.exec(decodeEntities(html)))) {
+        const dir = m[1], realName = decodeEntities(m[2]), stored = m[3], name = cleanName(realName);
         if (!/약관/.test(name) || /여신|사업방법서|상품요약서/.test(name) || seen.has(stored)) continue;
         seen.add(stored);
-        out.push({ title: name, url: `https://www.heungkukfire.co.kr${dir.startsWith('/') ? '' : '/'}${dir}${stored}`, headers: { Referer: base } });
+        const headers = { Referer: base, ...(cookie ? { Cookie: cookie } : {}) };
+        // 화면의 fn_filedownX 가 하는 일: downForm(filePath, fileRealName, fileSaveName, desYn, mode=View)을 /common/download.do 로 POST
+        out.push({
+          title: name, url: `https://www.heungkukfire.co.kr/common/download.do (${stored})`, headers,
+          post: { url: 'https://www.heungkukfire.co.kr/common/download.do', forms: [
+            { mode: 'View', filePath: dir, fileRealName: realName, fileSaveName: stored, desYn: '' },
+            { mode: 'View', filePath: dir, fileRealName: realName, fileSaveName: stored, desYn: 'N' },
+            { filePath: dir, fileRealName: realName, fileSaveName: stored },
+          ] },
+        });
       }
       return out;
     },
@@ -1075,6 +1091,15 @@ const COLLECTORS = {
 };
 
 async function downloadTerms(item) {
+  if (item.post) {
+    // 화면의 다운로드 버튼이 양식(form)을 POST로 보내는 방식(흥국화재 등). 양식 항목을 바꿔 가며 시도합니다.
+    let r = null;
+    for (const form of item.post.forms) {
+      r = await fetchBuffer(item.post.url, { method: 'POST', body: new URLSearchParams(form).toString(), headers: { ...(item.headers || {}), 'Content-Type': 'application/x-www-form-urlencoded' } });
+      if (isPdfBuf(r.buf)) return r;
+    }
+    return r;
+  }
   let r = await fetchBuffer(item.url, { headers: item.headers });
   if (!isPdfBuf(r.buf) && item.alt) r = await fetchBuffer(item.alt, { headers: item.headers });
   return r;
