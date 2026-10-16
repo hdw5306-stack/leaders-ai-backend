@@ -940,7 +940,11 @@ https://www.idbins.com</textarea>
           <button type="button" id="kLinksBtn" style="margin-top:8px;">첫 줄 주소의 링크 목록 보기</button>
           <button type="button" id="kDiagBtn" style="margin-top:8px;">보험사 33곳 한 번에 진단</button>
           <button type="button" id="kDiag2Btn" style="margin-top:8px;">정밀 진단 (열리는 곳만 · 상세)</button>
-          <button type="button" id="kFuncBtn" style="margin-top:8px;">다운로드 방식 조사 (흥국화재·교보·동양·라이나)</button>
+          <div class="admin-sub-title" style="margin-top:10px;">다운로드 방식 조사 — 한 줄에 "보험사 | 주소 | 찾을 글자1, 찾을 글자2" 형식 (저장하지 않습니다)</div>
+          <textarea id="kFuncText" rows="6">동양생명 | https://pbano.myangel.co.kr/paging/WE_AC_WEPAAP020100L | name="downloadForm", downloadForm, 약관
+라이나생명 | https://www.lina.co.kr/disclosure/product-public-announcement/product-on-sales?key=0 | getProductList, productList, /disclosure/, api.lina.co.kr
+교보생명 | https://www.kyobo.com/dgt/web/product-official/all-product/search | fileDownload, find-allProductSearch</textarea>
+          <button type="button" id="kFuncBtn" style="margin-top:8px;">다운로드 방식 조사 실행</button>
         </div>
 
         <div class="admin-msg" id="kMsg"></div>
@@ -2619,12 +2623,8 @@ document.getElementById('kColStartBtn').addEventListener('click', async (ev) => 
 document.getElementById('kFuncBtn').addEventListener('click', async (ev) => {
   kBusy(ev.target, true, true); kOut(''); kMsg('사이트 스크립트를 조사 중입니다… (약 2~4분)');
   try {
-    const targets = [
-      { name: '흥국화재', url: 'https://www.heungkukfire.co.kr/FRW/announce/insGoodsGongsiSale.do', terms: ['fn_filedownX', 'filedownX'] },
-      { name: '교보생명', url: 'https://www.kyobo.com/dgt/web/product-official/all-product/search', terms: ['fileDownload', '/file/ajax/download', 'find-allProductSearchDetail'] },
-      { name: '동양생명', url: 'https://pbano.myangel.co.kr/paging/WE_AC_WEPAAP020100L', terms: ['MasFiledownload', 'Filedownload'] },
-      { name: '라이나생명', url: 'https://www.lina.co.kr/disclosure/product-public-announcement/product-on-sales?key=0', terms: ['A0289', 'product-on-sales'] },
-    ];
+    const targets = document.getElementById('kFuncText').value.split('\n').map(l => l.split('|').map(x => x.trim())).filter(p => p.length >= 3 && p[1]).map(p => ({ name: p[0], url: p[1], terms: p.slice(2).join('|').split(',').map(x => x.trim()).filter(Boolean) }));
+    if (!targets.length) { kMsg('형식: 보험사 | 주소 | 찾을 글자1, 찾을 글자2'); kBusy(ev.target, false); return; }
     const st = await kFetch('/probe/func', { method: 'POST', body: JSON.stringify({ targets }) });
     let job = {};
     for (let i = 0; i < 400; i++) {
