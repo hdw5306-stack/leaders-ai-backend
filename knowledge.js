@@ -1266,12 +1266,22 @@ const COLLECTORS = {
           throw new Error(`교보생명 목록에서 파일을 찾지 못했습니다. [시도] ${tried.join(' || ')} ${detail} [fileDownload] ${defs.fileDownload || '(못 찾음)'}`.slice(0, 1800));
         }
       }
-      return uniqBy(refs.filter(isTermsRef), x => x.file).map(x => ({
-        title: cleanName(`${x.title || ''} ${fileBase(x.file)}`),
-        url: /^https?:/i.test(x.file) ? x.file : `${host}/file/ajax/download?fName=${encodeURIComponent(x.file)}`,
-        alt: `${host}/file/ajax/download?fName=${x.file}`,
-        headers: { Referer: page },
-      }));
+      const dl = (f) => `${host}/file/ajax/download?fName=${encodeURIComponent(f)}`;
+      return uniqBy(refs.filter(isTermsRef), x => x.file).map(x => {
+        const f = x.file;
+        // 목록의 같은 항목 안에 폴더 경로로 보이는 값(/dtc/pdf/...)이 있으면 그것도 후보로 씁니다.
+        const dirs = Object.values(x.row || {}).filter(v => typeof v === 'string' && /^\/[\w\/.-]*\/$/.test(v) && !/\.pdf/i.test(v));
+        const prefixes = [...new Set([...dirs, '/dtc/pdf/mm/', '/dtc/pdf/', '/dtc/pdf/mm/product/', '/dtc/pdf/yk/'])];
+        const bare = f.replace(/^\/+/, '');
+        const rowKeys = Object.entries(x.row || {}).filter(([k, v]) => typeof v !== 'object').map(([k, v]) => `${k}=${String(v).slice(0, 60)}`).join(', ');
+        return {
+          title: cleanName(`${x.title || ''} ${fileBase(f).replace(/^[A-Za-z0-9+\/=]{8,}_(?:\d+_)?/, '')}`),
+          url: /^https?:/i.test(f) ? f : dl(f),
+          alts: /^https?:/i.test(f) ? [] : [...prefixes.map(pf => dl(pf + bare)), ...prefixes.map(pf => `${host}/file/ajax/download?fName=${pf}${bare}`)],
+          headers: { Referer: page },
+          diag: `[교보 목록 항목] 파일값 ${f} | ${rowKeys}`.slice(0, 900),
+        };
+      });
     },
   },
   '동양생명': {
@@ -1450,7 +1460,7 @@ async function runCollectJob(job, { company, limit, userId, years, categories })
         job.log.push(`완료: ${title} (${pages.length}쪽, ${sv.saved}조각)`);
       } catch (e) {
         job.failed++; job.done++;
-        job.log.push(`실패: ${title} (${e.message})`);
+        job.log.push(`실패: ${title} (${e.message})${job.failed === 1 && it.diag ? ' ' + it.diag : ''}`);
       }
       if (job.log.length > 80) job.log = job.log.slice(-60);
     }
