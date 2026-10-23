@@ -76,6 +76,8 @@ function parseJson(text) {
 
 async function callAI({ system, content, maxOutput }) {
   if (!process.env.OPENAI_API_KEY) throw new Error('서버에 OPENAI_API_KEY 가 설정되지 않았습니다.');
+  // OpenAI(json_object 모드)는 요청 본문(input)에도 'json' 이라는 단어가 있어야 합니다.
+  content = content.map((c, i) => (i === 0 && c.type === 'input_text') ? { ...c, text: c.text + '\n\n(응답은 반드시 json 형식으로만 출력하세요.)' } : c);
   let lastErr = '';
   for (const model of models()) {
     let noTemp = false;
