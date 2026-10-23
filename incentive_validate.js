@@ -97,6 +97,21 @@ function validate(raw, ctx) {
       Object.keys(r).forEach(k => r[k] === undefined && delete r[k]);
       rules.push(r);
     });
+    // 같은 상품에 같은 종류·같은 지급시점의 시책이 둘 이상 겹치면 합산되므로 눈에 띄게 표시
+    const money = rules.filter(r => ['monthly', 'weekly', 'joiner', 'month13'].includes(r.itype) && Array.isArray(r.targets));
+    for (let i = 0; i < money.length; i++) {
+      for (let j = i + 1; j < money.length; j++) {
+        const a = money[i], b = money[j];
+        if (a.itype !== b.itype || (a.pay_offset || 0) !== (b.pay_offset || 0)) continue;
+        if (a.end < b.start || b.end < a.start) continue;
+        const sa = new Set(a.targets);
+        const shared = b.targets.filter(t => sa.has(t)).length;
+        if (!shared) continue;
+        const msg = `같은 상품 ${shared}건에 같은 종류 시책이 둘 이상 겹쳐 합산됩니다 — 「${a.title.slice(0, 30)}」와(과) 함께 맞는지 확인`;
+        addNote(b, msg); if (!a.review_note || !/겹쳐 합산/.test(a.review_note)) addNote(a, `「${b.title.slice(0, 30)}」와(과) 같은 상품이 겹쳐 합산됩니다 — 확인 필요`);
+        warnings.push(`${batch.company}: ${a.title} / ${b.title} — 같은 상품 ${shared}건이 겹침`);
+      }
+    }
     if (!rules.length) { warnings.push(`${batch.company}: 읽어낸 시책이 없습니다.`); continue; }
     batch.notes = ('AI가 공지에서 읽어 만든 초안입니다. 원본 공지와 대조해 확인한 뒤 확정하세요.' + (batch.notes ? ' ' + batch.notes : '')).slice(0, 480);
     out.push({ batch, rules });
