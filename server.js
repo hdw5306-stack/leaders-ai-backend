@@ -42,6 +42,7 @@ const scheduleRoutes = require('./schedule');
 const adminRoutes = require('./admin');
 const contentRoutes = require('./content');
 const branchRoutes = require('./branches');
+const incentiveReader = require('./incentive');
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
@@ -66,6 +67,7 @@ app.use((req, res, next) => {
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Vary', 'Origin');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
@@ -749,6 +751,9 @@ app.use('/api/content', contentRoutes);
 
 // ── 7) 지사 목록 (회원가입 화면은 로그인 전이라 인증 없이 조회 가능) ─
 app.use('/api/branches', branchRoutes);
+
+// ── 8) 시책 공지 자동 읽기 (설계사 수수료 예측 프로그램에서 호출) ─────
+app.use('/api/incentive', incentiveReader.router);
 
 const PORT = process.env.PORT || 3000;
 
