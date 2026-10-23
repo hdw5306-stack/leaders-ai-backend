@@ -46,6 +46,33 @@ function hwpxXmlToText(xml) {
 }
 const num = f => Number((f.match(/(\d+)\.xml$/) || [0, 0])[1]);
 
+// 슬라이드의 글상자들을 "위치 순서"로 읽습니다. (표가 아니라 떠 있는 글상자로 만든 공지에서
+// '20년납 미만' 같은 조건 글상자가 어느 상품·% 와 한 줄인지 알 수 있게, 같은 높이의 글상자를 한 줄로 묶습니다.)
+function slidePositionalText(xml) {
+  const items = [];
+  const re = /<p:(sp|graphicFrame|pic)\b[\s\S]*?<\/p:\1>/g;
+  let m;
+  while ((m = re.exec(xml))) {
+    const blk = m[0];
+    const off = /<a:off x="(-?\d+)" y="(-?\d+)"\/>/.exec(blk);
+    const ext = /<a:ext cx="(\d+)" cy="(\d+)"\/>/.exec(blk);
+    const text = slideXmlToText(blk).replace(/\{[0-9A-Fa-f-]{36}\}/g, '').replace(/[ \t]+/g, ' ').split('\n').map(x => x.trim()).filter(Boolean).join(' / ');
+    if (!text || !off) continue;
+    const x = +off[1], y = +off[2], cy = ext ? +ext[2] : 0, cx = ext ? +ext[1] : 0;
+    items.push({ x, yc: y + cy / 2, cx, text });
+  }
+  if (!items.length) return '';
+  items.sort((a, b) => a.yc - b.yc || a.x - b.x);
+  const TOL = 230000; // 약 0.25인치
+  const lines = [];
+  for (const it of items) {
+    const last = lines[lines.length - 1];
+    if (last && Math.abs(it.yc - last.yc) <= TOL) { last.parts.push(it); last.yc = (last.yc * (last.parts.length - 1) + it.yc) / last.parts.length; }
+    else lines.push({ yc: it.yc, parts: [it] });
+  }
+  return lines.map(l => l.parts.sort((a, b) => a.x - b.x).map(p => p.text).join('   ⟷   ')).join('\n');
+}
+
 async function toInput(buffer, filename, mimetype) {
   const name = String(filename || '').toLowerCase();
   const ext = (name.match(/\.([a-z0-9]+)$/) || [, ''])[1];
@@ -84,13 +111,14 @@ async function toInput(buffer, filename, mimetype) {
     let text = '', emptyWithPic = 0;
     for (const s of slides) {
       const xml = await s.async('string');
-      const t = slideXmlToText(xml).trim();
+      const t = (slidePositionalText(xml) || slideXmlToText(xml)).trim();
       if (!t && /<p:pic>/.test(xml)) emptyWithPic++;
-      text += `\n=== 슬라이드 ${num(s.name)} ===\n${t}\n`;
+      text += `\n=== 슬라이드 ${num(s.name)} (글상자를 위→아래, 같은 줄은 왼쪽→오른쪽 순서로 나열; ⟷ 는 같은 줄의 다른 글상자) ===\n${t}\n`;
     }
     const plain = text.replace(/=== 슬라이드 \d+ ===/g, '').replace(/\s/g, '');
     if (plain.length < 200 && zip.file(/ppt\/media\//).length) throw new Error('이미지로 된 PowerPoint 파일입니다. PDF로 저장해서 올려 주세요.');
     if (emptyWithPic) warnings.push(`PowerPoint ${emptyWithPic}개 슬라이드는 이미지라 읽지 못했습니다. PDF로 저장해서 올리면 모두 읽을 수 있습니다.`);
+    warnings.push('PowerPoint는 글상자 위치 정보가 일부 사라져 "20년납 미만" 같은 조건이 엉뚱한 상품·%에 붙을 수 있습니다. PDF로 저장해서 올리면 가장 정확합니다.');
     return { kind: 'text', text: text.slice(0, MAX_TEXT), warnings };
   }
   if (ext === 'hwpx') {
