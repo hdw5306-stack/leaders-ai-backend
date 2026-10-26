@@ -71,8 +71,12 @@ function validate(raw, ctx) {
         else {
           r.tiers = tiers;
           if (tiers.some(t => t.min < 1000 || t.pay < 1000)) addNote(r, '구간 금액이 1,000원 미만입니다 — 단위(만원/원) 확인 필요');
+          const span = (new Date(r.end) - new Date(r.start)) / 86400000;
+          if (span > 62) { r.itype = 'note'; delete r.tiers; addNote(r, `기간이 ${Math.round(span)}일(2개월 초과)이라 한 달 입력으로 판정할 수 없어 계산에서 제외했습니다 — 여러 달 연속 조건 확인`); }
+          else {
           r.tier_bucket = r.tier_bucket === 'm13' ? 'm13' : 'next';
           if (Array.isArray(r.prereq)) r.prereq = r.prereq.filter(p => DATE.test(p.start || '') && DATE.test(p.end || ''));
+          }
         }
       }
       // 상품 연결 점검
