@@ -75,6 +75,15 @@ function validate(raw, ctx) {
           if (span > 62) { r.itype = 'note'; delete r.tiers; addNote(r, `기간이 ${Math.round(span)}일(2개월 초과)이라 한 달 입력으로 판정할 수 없어 계산에서 제외했습니다 — 여러 달 연속 조건 확인`); }
           else {
           r.tier_bucket = r.tier_bucket === 'm13' ? 'm13' : 'next';
+          // 연속가동형(전기간 조건이 있는 구간표)의 짝 맞춤 점검: 이번 기간 기준(min)은 같고, 전기간(prev)이 커질수록 시상이 커져야 정상
+          const withPrev = tiers.filter(t => t.prev);
+          if (withPrev.length) {
+            const mins = new Set(withPrev.map(t => t.min));
+            const sorted = [...withPrev].sort((a, b) => a.prev - b.prev);
+            const mono = sorted.every((t, i) => i === 0 || t.pay >= sorted[i - 1].pay);
+            const dupPrev = new Set(withPrev.map(t => t.prev)).size !== withPrev.length;
+            if (mins.size > 1 || !mono || dupPrev) addNote(r, '전기간 실적과 시상금의 짝이 공지 표와 맞는지 확인이 필요합니다 (이번 기간 기준이 서로 다르거나 시상금이 순서대로 늘지 않음)');
+          }
           if (Array.isArray(r.prereq)) r.prereq = r.prereq.filter(p => DATE.test(p.start || '') && DATE.test(p.end || ''));
           }
         }
