@@ -19,6 +19,15 @@ function monthRange(period, today) {
   return [`${y}-${p(mo)}-01`, `${y}-${p(mo)}-${p(last)}`];
 }
 
+const STD_CATS = ['상해(운전자)', '건강(의료)', '어린이', '유병자', '연금·저축', '화재·재물', '펫', '치아', '간병'];
+const CAT_WORDS = [['펫', ['펫', '반려']], ['화재·재물', ['화재', '재물', '단체']], ['상해(운전자)', ['운전자', '상해']], ['치아', ['치아']], ['간병', ['간병', '치매']], ['연금·저축', ['연금', '저축']], ['어린이', ['어린이']], ['유병자', ['유병자', '간편']], ['건강(의료)', ['건강', '의료', '실손']]];
+function normTag(t) {
+  t = String(t || '').replace(/\s+/g, ' ').trim();
+  if (!t || STD_CATS.includes(t)) return t;
+  const hit = CAT_WORDS.filter(([, ws]) => ws.some(w => t.includes(w))).map(([k]) => k);
+  return hit.length === 1 && t.length <= 14 ? hit[0] : t; // 짧은 이름이 한 상품군에만 해당하면 표준 이름으로, 아니면 그대로(추가 조건)
+}
+function normTagStr(s) { return String(s).split('+').map(g => g.split(',').map(normTag).filter(Boolean).join(',')).filter(Boolean).join('+'); }
 function validate(raw, ctx) {
   const warnings = [];
   const products = ctx.products || {};
@@ -106,6 +115,7 @@ function validate(raw, ctx) {
           } else r.targets = fixed;
         } else if (batch.grp === 'life') delete r.targets;
       } else delete r.targets;
+      if (batch.grp === 'nonlife') { if (r.tag) r.tag = normTagStr(r.tag); if (Array.isArray(r.not_tags)) r.not_tags = r.not_tags.map(normTag).filter(Boolean); }
       r.grp = batch.grp; r.company = batch.company;
       Object.keys(r).forEach(k => r[k] === undefined && delete r[k]);
       rules.push(r);
