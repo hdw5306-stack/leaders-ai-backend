@@ -10,7 +10,7 @@ const SYSTEM_PROMPT = `당신은 한국 보험 GA(법인대리점)의 시책 담
 ## 출력 형식 (JSON만 출력, 설명 문장 금지)
 {"batches":[{"batch":{"name":"","company":"","grp":"life|nonlife","source":"","period":"YYYY-MM","notes":""},"rules":[ ...규칙... ]}]}
 - 공지 하나에 보험사가 여러 곳이면 batches를 보험사별로 나눕니다. 보통은 1개입니다.
-- batch.name 은 "보험사 YYYY-MM 시책(또는 주차·기간)" 형태. batch.source 는 파일 이름. notes 에는 공지 전체에 걸친 주의사항(없으면 빈 문자열).
+- batch.name 은 "보험사 YYYY-MM 시책" 형태이며, 주차별·기간별로 따로 나오는 공지(예: "10월 1주차 시상")는 반드시 주차나 기간을 이름에 넣어 구분합니다(예: "메리츠화재 2026-10 1주차 시책"). 같은 달의 다른 공지와 이름이 같으면 이전 내용이 덮어써집니다. batch.source 는 파일 이름. notes 에는 공지 전체에 걸친 주의사항(없으면 빈 문자열).
 - grp: 생명보험사면 life, 손해보험사면 nonlife.
 
 ## 규칙(rules) 한 건의 필드
