@@ -1,191 +1,101 @@
 /**
- * incentive.js — 시책 공지 자동 읽기 (설계사 수수료 예측 프로그램용)
- *
- *   POST /api/incentive/jobs         공지 파일을 올려 읽기 작업 시작 → { jobId }
- *        - multipart: file (필수) 또는 fileId(앞 단계에서 받은 값),
- *          phase = identify | extract,
- *          companies(JSON, 수수료표에 있는 보험사 이름 목록 — identify),
- *          products(JSON {보험사:[상품 라벨]}), nonlife(JSON) — extract
- *   GET  /api/incentive/jobs/:id     진행 상태 조회 → { status: running|done|error, result|error }
- *   GET  /api/incentive/ping         연결 확인
- *
- * 인증: 수수료 예측 프로그램(카페24)이 본사관리자 로그인 후 발급한 짧은 시간용 토큰(HMAC)만 받습니다.
- *       카페24와 이 서버가 같은 비밀값(INCENTIVE_SHARED_SECRET)을 공유합니다.
- * AI: 이미 쓰고 있는 OPENAI_API_KEY 를 사용합니다. 모델은 INCENTIVE_MODEL 로 바꿀 수 있습니다.
- * 읽은 파일은 디스크에 저장하지 않고 메모리에서 잠깐(20분) 보관 후 폐기합니다.
+ * incentive_prompt.js — 시책 공지를 읽어 "수수료 예측 프로그램"이 쓰는 시책 규칙(JSON)으로 바꾸는 지시문.
+ * (프로그램의 계산 방식과 필드 의미는 수수료 예측 프로그램의 시책 엔진과 반드시 일치해야 합니다.)
  */
-const express = require('express');
-const crypto = require('crypto');
-const multer = require('multer');
-const { toInput } = require('./incentive_files');
-const { SYSTEM_PROMPT, userPrompt, IDENTIFY_PROMPT } = require('./incentive_prompt');
-const { validate } = require('./incentive_validate');
 
-const router = express.Router();
-const upload = multer({ limits: { fileSize: 15 * 1024 * 1024 } });
-const OPENAI_BASE = (process.env.OPENAI_BASE_URL || 'https://api.openai.com').replace(/\/$/, '');
+const SYSTEM_PROMPT = `당신은 한국 보험 GA(법인대리점)의 시책 담당자입니다. 보험사가 보내는 시책(프로모션·시상) 공지를 정확히 읽어서,
+설계사 수수료 예측 프로그램이 계산에 쓰는 시책 규칙 JSON으로 바꿉니다. 사람이 최종 확인하지만, 숫자와 조건은 공지에 있는 그대로 옮겨야 합니다.
+공지에 없는 내용을 만들어 내지 마세요. 확실하지 않으면 추측하지 말고 해당 항목의 review_note에 이유를 적으세요.
 
-// ── 토큰 확인 ────────────────────────────────────────────────
-function verifyToken(req, res, next) {
-  const secret = process.env.INCENTIVE_SHARED_SECRET;
-  if (!secret) return res.status(503).json({ error: '서버에 INCENTIVE_SHARED_SECRET 이 설정되지 않았습니다.' });
-  const m = /^Bearer (.+)$/.exec(req.headers.authorization || '');
-  if (!m) return res.status(401).json({ error: '인증이 필요합니다.' });
-  const [body, sig] = m[1].split('.');
-  if (!body || !sig) return res.status(401).json({ error: '인증 정보가 올바르지 않습니다.' });
-  const expect = crypto.createHmac('sha256', secret).update(body).digest('hex');
-  const a = Buffer.from(sig), b = Buffer.from(expect);
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: '인증 정보가 올바르지 않습니다.' });
-  let payload;
-  try { payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); } catch (e) { return res.status(401).json({ error: '인증 정보가 올바르지 않습니다.' }); }
-  if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return res.status(401).json({ error: '인증이 만료되었습니다. 화면을 새로 고쳐 다시 시도해 주세요.' });
-  if (payload.scope !== 'incentive') return res.status(403).json({ error: '권한이 없습니다.' });
-  next();
-}
+## 출력 형식 (JSON만 출력, 설명 문장 금지)
+{"batches":[{"batch":{"name":"","company":"","grp":"life|nonlife","source":"","period":"YYYY-MM","notes":""},"rules":[ ...규칙... ]}]}
+- 공지 하나에 보험사가 여러 곳이면 batches를 보험사별로 나눕니다. 보통은 1개입니다.
+- batch.name 은 "보험사 YYYY-MM 시책" 형태이며, 주차별·기간별로 따로 나오는 공지(예: "10월 1주차 시상")는 반드시 주차나 기간을 이름에 넣어 구분합니다(예: "메리츠화재 2026-10 1주차 시책"). 같은 달의 다른 공지와 이름이 같으면 이전 내용이 덮어써집니다. batch.source 는 파일 이름. notes 에는 공지 전체에 걸친 주의사항(없으면 빈 문자열).
+- grp: 생명보험사면 life, 손해보험사면 nonlife.
 
-// ── 작업/파일 임시 보관 ──────────────────────────────────────
-const jobs = new Map();
-const files = new Map();
-const TTL = 20 * 60 * 1000;
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of jobs) if (now - v.at > TTL) jobs.delete(k);
-  for (const [k, v] of files) if (now - v.at > TTL) files.delete(k);
-}, 60 * 1000).unref();
-const newId = () => crypto.randomBytes(12).toString('hex');
+## 규칙(rules) 한 건의 필드
+- itype (필수):
+  · monthly : 월 단위 시책(가입월 기준, 보통 익월 지급). % 또는 정액.
+  · weekly : 특정 주(가입주) 한정 주시책.
+  · joiner : 가입 기간 한정 시책. 다른 시책과 중복되지 않는다고 공지에 적힌 경우 stackable=0.
+  · month13 : 13회차(13차월) 등 유지 조건 후에 지급되는 시책. pay_offset 에 지급 차월(13, 15 등).
+  · tier : 월초(월납보험료) "합계" 구간 달성 시 지급하는 구간 시상(시상금이 구간표로 주어짐).
+  · goods : 물품·여행·골드바·상품권·클럽/멤버십 혜택 등 현금이 아닌 시책, 또는 지사로 별도 지급되는 시책. 금액 계산 안 함(memo에 내용 설명).
+  · note : 계산하지 않는 조건·환수·유의사항·제외 조건 안내.
+- title (필수): 공지에 있는 이름을 살려 짧게. 같은 표의 행마다 별도 규칙으로 만드세요(예: "익월 250%"와 "13차월 50%"는 별도).
+- calc: "pct"(월납보험료의 %, value 에 % 숫자) 또는 "fixed"(원 단위 정액, value 에 원).
+  예) "300%" → calc "pct", value 300. "시상금 20만원" → calc "fixed", value 200000.
+- value: 위 값. tier/goods/note 는 0.
+- start, end (필수): 가입(청약) 기준 적용 기간 "YYYY-MM-DD". 공지에 기간이 있으면 그대로 사용. 월 단위 공지(예: "10월 시책")이고 기간이 없으면 그 달 1일~말일. "N주차"만 적혀 있고 날짜가 없으면 달력상 해당 주로 추정하고 review_note 에 "기간 추정"이라고 적습니다. 연도가 없으면 공지 이름/날짜로 판단하되 모호하면 review_note.
+- pay_offset: 가입월로부터 몇 번째 달에 지급하는지. "익월" = 1, "익익월" = 2, "13회차(13차월)" = 13, "15회차" = 15. 생략하면 monthly=1, month13=13.
+- stackable: 1(다른 시책과 중복 가능, 기본) / 0(공지에 중복 불가·택일·"큰 금액 적용" 등이 있을 때). 
+- targets: 이 시책이 적용되는 상품 라벨의 목록. 반드시 아래 [상품 라벨 목록]에 있는 문자열을 한 글자도 바꾸지 말고 그대로 복사합니다.
+  · 생명보험: 공지의 상품명·납입기간 조건(예: "10년납 이상", "20년납 미만", "5년납 제외")을 해당 라벨 안의 납입기간 표기와 대조해 조건에 맞는 라벨만 골라 넣습니다. 상품명이 비슷해도 정확히 같은 상품인지 따져 보세요(예: "간편" 유무, 보증비용부과형 등).
+  · 공지의 상품이 목록에 없으면 목록에서 억지로 비슷한 것을 고르지 말고, 그 시책을 note 로 만들고 review_note 에 "수수료표에서 대응 상품을 찾지 못함 — 본사 확인 필요"라고 적습니다.
+  · 보험사의 모든 상품에 적용되는 시책이면 targets 를 생략(null)합니다.
+  · 손해보험은 상품 라벨 대신 tag 를 씁니다(아래).
+- tag / not_tags: 손해보험처럼 상품 목록으로 구분하기 어려운 경우, 설계사가 "해당 상품군" 체크박스로 고르는 이름. tag 는 이 시책이 적용되는 상품군 이름(예: "펫퍼민트(반려동물)", "재물·단체"), not_tags 는 제외되는 상품군 이름 목록. 같은 상품군에는 항상 같은 이름을 사용하세요.
+- min_premium: 건당 최소 월납보험료(원) 조건이 있으면. product_filter: 상품명에 포함되어야 하는 글자(대안 필터)가 꼭 필요한 경우에만.
+- cap_premium: 건당 시상 인정 보험료 상한(원)이 공지에 있으면(예: "건당 최대 30만원 인정"). premium_factor: 보험료에 곱하는 인정 비율(예: "월납 50% 인정" → 0.5). 없으면 1.
+- tiers (tier 전용): [{"min":월초합계 원,"pay":시상금 원,"prev":(연속가동일 때 이전 기간 실적 조건 원, 선택)}, ...]. 단위는 항상 원. 공지의 "만원" 단위를 원으로 바꾸세요(예: 10만원→100000).
+  · 구간 시상은 "해당 기간 가입분 월초(월납보험료) 합계"로 판정합니다. 공지가 "건수" 기준이면 계산할 수 없으므로 note 로 두고 review_note 에 사유를 적으세요.
+  · tier_bucket: 시상금 지급 시점이 익월이면 "next", 13회차 유지 후이면 "m13".
+  · prereq: 연속가동처럼 이전 기간 실적 조건이 있을 때 [{"start":"YYYY-MM-DD","end":"YYYY-MM-DD","label":"9.21~30","same_level":true|false,"min":원(이전 기간 최소 실적, same_level이 아닐 때)}]. same_level 은 "두 기간 모두 같은 구간 달성"일 때 true.
+- src_text: 근거가 된 공지 원문 한두 줄(300자 이내, 원문 그대로). memo: 보충 설명(500자 이내).
+- review_note: 사람이 반드시 확인해야 할 의심 사항(400자 이내). 예) 기간 추정, 조건이 프로그램에 입력할 수 없는 경우(보험료납입면제특약 부가 여부, 건수 조건, 신계약 외 조건 등), 상품 연결 불확실, 구간 중복 적용 여부 불명확, 해석이 둘 이상 가능한 문구. 확실하면 생략.
 
-// ── AI 호출 ──────────────────────────────────────────────────
-function models() { return [process.env.INCENTIVE_MODEL, 'gpt-4.1', 'gpt-4o'].filter((m, i, a) => m && a.indexOf(m) === i); }
+## 공지 레이아웃에서 자주 하는 실수 (반드시 지키세요)
+1. **제목 옆의 큰 % 는 요약일 뿐입니다.** "인보험 (10/1-11) 200% [13회차]"처럼 구간표(10만↑ 20만, 20만↑ 40만 …)가 붙어 있으면, 큰 % 는 최고 구간의 요약(최대 시상 ÷ 최대 구간 월초)이므로 **별도 규칙으로 만들지 말고** 구간표(tier)만 만드세요. "최대 300%", "10월 정규 시상 450% [익월]" 같은 합계 표기도 마찬가지로, 아래 개별 행(200% + 250%)만 규칙으로 만드세요. 합계와 행을 둘 다 만들면 이중으로 계산됩니다.
+2. **지급 시기는 해당 행 옆의 표기를 그대로 따릅니다.** (익월)=pay_offset 1, (익익월)=2, [13회차]=13. 같은 줄 안에서도 행마다 다를 수 있습니다(예: 인보험 200% (익월), 선지급 250% (익익월)). 제목 줄의 합계 표기가 달라도 개별 행 표기를 우선합니다.
+3. **기간은 날짜가 적힌 항목에만 그 날짜를 씁니다.** 제목에 "(10/1-11)"처럼 기간이 적힌 시상은 그 기간, "10월 정규 시상"처럼 날짜 없이 월만 있는 시상은 그 달 1일~말일입니다. 공지 제목이 "1주차"여도 날짜 없는 시상은 월 전체입니다.
+4. **연속가동 표**(예: 9/14-30 실적 열 + 10/1-18 실적 + 시상 열)는 행끼리 대응합니다. 이전 기간 열의 값은 prereq 쪽 조건(tiers 의 prev), 이번 기간 조건은 min, 오른쪽 시상 열이 pay 입니다. 예: 9/14-30 이 10만·20만·30만·50만, 10/1-18 이 10만, 시상이 20만·60만·80만·180만 → tiers=[{"min":100000,"prev":100000,"pay":200000},{"min":100000,"prev":200000,"pay":600000},{"min":100000,"prev":300000,"pay":800000},{"min":100000,"prev":500000,"pay":1800000}], prereq=[{"start":"9월 시작일","end":"9월 끝일","label":"9/14~30"}], 이번 기간은 start/end 에 10/1~10/18. 구간 금액을 다른 줄과 섞거나 새로 만들지 마세요.
+5. **여러 달 연속 조건**(예: "10·11·12월 연속")은 한 달 입력으로 판정할 수 없으므로 규칙(tier)으로 만들지 말고 note 로 두세요. review_note 에 "여러 달 연속 조건이라 계산 제외"라고 적습니다.
+6. **건당 인정 한도 표**(예: 인보험 30만원)가 공통기준에 있으면, 해당 시책의 cap_premium 에 그 금액(원)을 넣으세요.
+7. **손해보험 상품군 이름은 아래 9가지 표준 이름만 사용합니다**: 상해(운전자), 건강(의료), 어린이, 유병자, 연금·저축, 화재·재물, 펫, 치아, 간병. 특정 상품군에만 적용되는 시책은 tag 에 그 이름을 적고(여러 군이면 쉼표로 "건강(의료),어린이" = 또는), 모든 상품에 적용되는 시책은 tag 를 비워 둡니다. 제외되는 상품군은 not_tags 에 같은 표준 이름으로 적습니다(예: 인보험 시책의 not_tags=["펫","화재·재물"]). 공지의 "펫퍼민트(반려동물)"은 "펫", "재물&단체"는 "화재·재물"입니다.
 
-function extractText(data) {
-  let t = '';
-  for (const item of data.output || []) {
-    if (item.type !== 'message') continue;
-    for (const c of item.content || []) if (c.type === 'output_text') t += c.text || '';
-  }
-  return t;
-}
-function parseJson(text) {
-  let s = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  try { return JSON.parse(s); } catch (e) {
-    const a = s.indexOf('{'), b = s.lastIndexOf('}');
-    if (a >= 0 && b > a) return JSON.parse(s.slice(a, b + 1));
-    throw e;
-  }
-}
+8. **"정규 시상" 합계 박스**: 예) "10월 정규 시상 450% [익월]" 아래에 칸이 4개(인보험 200% (익월) · 엠금융서비스 선지급 250% (익익월) · 재물&단체 100% · 펫퍼민트 300%)이면, 규칙은 칸 4개만 만들고 **각 칸 안에 적힌 괄호 표기를 칸마다** 따릅니다. 위 예시의 선지급 250% 는 (익익월)이므로 pay_offset=2 입니다. 괄호 표기가 없는 칸(재물&단체, 펫퍼민트)은 같은 박스의 합계 표기(익월)를 따릅니다.
+9. **표의 병합 칸**(여러 행에 걸쳐 하나로 합쳐진 칸)은 그 값이 모든 행에 똑같이 적용됩니다. 연속가동 표에서 10/1-18 칸이 하나(10만)로 합쳐져 있으면 모든 행의 min 이 같은 값이고, 구간 개수는 표의 행 수와 같습니다(행이 4개면 tiers 4개). 행을 서로 섞은 조합(예: 전기간 10만 + 이번 30만)은 만들지 마세요.
+10. **없는 규칙을 만들지 마세요.** 공지에 적히지 않은 시책(예: 어떤 상품군의 13회차 시상)을 추정으로 만들지 말고, src_text 에는 공지에 실제로 있는 글자만 그대로 적으세요. 확신이 없는 항목은 만들지 않거나 note 로 두고 review_note 에 이유를 적으세요.
+11. **상품 범위가 일부로 한정된 시책을 전체 상품에 적용하지 마세요.** "주요상품(통합·간편·어린이)"처럼 일부 상품에만 적용되는데 수수료표의 상품명으로 연결할 수 없으면, 위 표준 상품군 중 가까운 것을 tag 로 적으세요(예: 통합·간편·어린이 → "건강(의료),유병자,어린이"). 표준 상품군으로 표현할 수 없는 조건(예: 특정 담보 동시가입)은 tag 에 "+조건이름" 을 붙이세요(예: "+암치단비·표적항암 담보 동시가입"). 둘 다 필요하면 "건강(의료)+조건이름" 입니다. 항상 review_note 에 "적용 상품 범위 확인 필요"를 적어 주세요.
+12. **금액 구간표는 itype 을 반드시 "tier" 로 하세요.** "5만↑ 20만, 10만↑ 40만, 20만↑ 80만 …"처럼 월초(실적) 합계 구간별로 정액을 주는 표는, 이름이 "추가시상"·"스팟시상"·"정액구간"·"13차월"이어도 monthly/month13 이 아니라 tier 입니다. tiers=[{"min":50000,"pay":200000},…] 형식으로 쓰고, 13회차(13차월)에 지급되면 tier_bucket="m13", 익월이면 "next" 입니다. 주차별(예: 10/12~18, 10/19~25)로 표가 따로 있으면 주차마다 tier 규칙을 따로 만들고 기간(start/end)을 각각 적으세요. "(각 기간 동일)"로 표가 하나만 있으면 한 규칙으로 만듭니다.
+13. **batch.company 는 아래 [보험사 목록]에 있는 이름을 글자 그대로** 쓰세요. "KB손해보험"이 아니라 목록에 있는 "KB손보", "라이나손해보험"이 아니라 "에이스(라이나)"처럼 목록의 이름만 사용합니다.
 
-async function callAI({ system, content, maxOutput }) {
-  if (!process.env.OPENAI_API_KEY) throw new Error('서버에 OPENAI_API_KEY 가 설정되지 않았습니다.');
-  // OpenAI(json_object 모드)는 요청 본문(input)에도 'json' 이라는 단어가 있어야 합니다.
-  content = content.map((c, i) => (i === 0 && c.type === 'input_text') ? { ...c, text: c.text + '\n\n(응답은 반드시 json 형식으로만 출력하세요.)' } : c);
-  let lastErr = '';
-  for (const model of models()) {
-    let noTemp = false;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const r = await fetch(`${OPENAI_BASE}/v1/responses`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model,
-            instructions: system,
-            input: [{ role: 'user', content }],
-            text: { format: { type: 'json_object' } },
-            max_output_tokens: maxOutput || 16000,
-            ...(noTemp ? {} : { temperature: 0 }),
-          }),
-        });
-        if (r.ok) {
-          const data = await r.json();
-          if (data.status === 'incomplete') throw Object.assign(new Error('공지가 너무 길어 AI가 한 번에 다 읽지 못했습니다. 공지를 나누어(보험사별/쪽별) 올려 주세요.'), { fatal: true });
-          const text = extractText(data);
-          if (!text) throw new Error('AI가 빈 응답을 보냈습니다.');
-          return { json: parseJson(text), usage: data.usage || {}, model };
-        }
-        const body = (await r.text()).slice(0, 400);
-        lastErr = `${model} ${r.status}: ${body}`;
-        console.error('[시책읽기] AI 오류', lastErr);
-        if (r.status === 429 || r.status >= 500) { await new Promise(s => setTimeout(s, 2500 * (attempt + 1))); continue; }
-        if (r.status === 400 && !noTemp && /temperature/i.test(body)) { noTemp = true; continue; } // 이 모델은 temperature 를 받지 않음 → 빼고 다시
-        if (r.status === 400 || r.status === 404) break; // 이 모델로는 안 됨 → 다음 모델
-        if (r.status === 401) throw Object.assign(new Error('OpenAI 키가 올바르지 않습니다.'), { fatal: true });
-        break;
-      } catch (e) {
-        if (e.fatal) throw e;
-        lastErr = `${model}: ${e.message}`;
-        console.error('[시책읽기] 호출 실패', lastErr);
-        await new Promise(s => setTimeout(s, 1500));
-      }
+## 파일 글자(텍스트)로 받은 경우 읽는 법
+- PowerPoint 슬라이드는 글상자를 "위→아래, 같은 줄은 왼쪽→오른쪽" 순서로 나열한 것이며 ⟷ 는 같은 줄의 다른 글상자입니다. "20년납 미만" 같은 조건 글상자는 가까이 나열된 상품·% 와 순서대로 짝지어 보세요(예: 조건이 2개이고 % 가 2개면 첫째끼리, 둘째끼리). 짝이 확실하지 않으면 추측으로 모든 상품에 붙이지 말고 review_note 에 적으세요.
+
+## 중요한 원칙
+1. 숫자·기간·% 는 공지에 쓰인 것만 사용합니다. 계산하거나 합산해서 새로 만들지 마세요(예: "300%(익월 250% + 13차월 50%)"는 250%와 50% 두 규칙으로).
+2. 본인계약·GA계약 제외, 무효·해지 환수, 유지 조건 등 계산에 반영할 수 없는 조건은 note 로 정리합니다. 한 개의 note 에 같은 성격(공통 유의사항, 환수 기준)을 묶어도 됩니다.
+3. 같은 시책이 상품별로 %가 다르면 %별로 규칙을 나눕니다.
+4. 정액·물품 등 금액으로 바꿀 수 없는 혜택(골드바, 여행, 클럽 등)은 goods 로 두고 현금으로 환산하지 마세요.
+5. 하나의 상품이 같은 종류의 시책(예: 익월 시책) 규칙 두 개에 동시에 속하게 만들지 마세요. 서로 다른 % 가 상품·납입기간·특약 조건으로 구분되는 공지인데 어느 상품이 어느 %에 해당하는지 확실하지 않으면, 모두에 같은 상품을 넣지 말고 확실한 쪽만 규칙으로 만들고 나머지는 note 로 두어 review_note 에 이유를 적으세요.
+6. 공지의 납입기간 조건(예: "10년납 미만")에 맞는 라벨이 목록에 없을 때 가장 가까운 다른 구간의 라벨(예: 10~14년납)을 대신 쓰지 마세요. 그 시책은 note 로 두고 review_note 에 적습니다.
+7. JSON 외의 텍스트, 마크다운 코드블록은 출력하지 않습니다.`;
+
+function userPrompt({ filename, today, products, nonlife, fileText }) {
+  let s = `[오늘 날짜] ${today}\n[파일 이름] ${filename}\n\n`;
+  const names = Object.keys(products || {});
+  const allCo = names.concat(Object.keys(nonlife || {}));
+  if (allCo.length) s += '[보험사 목록 — batch.company 는 이 이름 그대로 사용]\n' + allCo.join(', ') + '\n\n';
+  if (names.length) {
+    s += '[상품 라벨 목록 — targets 에는 아래 문자열만 그대로 복사해서 사용]\n';
+    for (const n of names) {
+      s += `\n■ ${n} (${products[n].length}개)\n` + products[n].map(x => '- ' + x).join('\n') + '\n';
     }
   }
-  throw new Error('AI 서비스 호출에 실패했습니다. ' + lastErr.slice(0, 200));
-}
-
-// ── 단계별 처리 ──────────────────────────────────────────────
-async function runIdentify(file, companies) {
-  const input = await toInput(file.buffer, file.filename, file.mimetype);
-  const content = [{ type: 'input_text', text: IDENTIFY_PROMPT + '\n\n[보험사 목록]\n' + (companies || []).join(', ') + (input.text ? '\n\n[공지 내용]\n' + input.text.slice(0, 20000) : '') }];
-  if (input.filePart) content.push(input.filePart);
-  if (input.imagePart) content.push(input.imagePart);
-  const ai = await callAI({ system: '당신은 보험 시책 공지를 분류하는 도우미입니다. JSON만 출력합니다.', content, maxOutput: 600 });
-  const found = Array.isArray(ai.json.companies) ? ai.json.companies.map(String) : [];
-  const known = new Set(companies || []);
-  return { companies: found.filter(c => !companies || known.has(c)), unknown: found.filter(c => companies && !known.has(c)), period: String(ai.json.period || ''), warnings: input.warnings, usage: ai.usage, model: ai.model };
-}
-
-async function runExtract(file, products, nonlife) {
-  const input = await toInput(file.buffer, file.filename, file.mimetype);
-  const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' });
-  const content = [{ type: 'input_text', text: userPrompt({ filename: file.filename, today, products, nonlife, fileText: input.text }) }];
-  if (input.filePart) content.push(input.filePart);
-  if (input.imagePart) content.push(input.imagePart);
-  const ai = await callAI({ system: SYSTEM_PROMPT, content, maxOutput: 16000 });
-  const v = validate(ai.json, { products, nonlife, today, filename: file.filename });
-  const ruleCount = v.batches.reduce((a, b) => a + b.rules.length, 0);
-  const review = v.batches.reduce((a, b) => a + b.rules.filter(r => r.review_note).length, 0);
-  console.log(`[시책읽기] ${file.filename} → ${v.batches.length}묶음 ${ruleCount}건 (확인필요 ${review}건) 모델 ${ai.model} 토큰 입력 ${ai.usage.input_tokens || '?'} / 출력 ${ai.usage.output_tokens || '?'}`);
-  return { batches: v.batches, warnings: input.warnings.concat(v.warnings), usage: ai.usage, model: ai.model };
-}
-
-function parseJsonField(v) { if (!v) return null; try { return JSON.parse(v); } catch (e) { return null; } }
-
-router.get('/ping', verifyToken, (req, res) => res.json({ ok: true, ai: !!process.env.OPENAI_API_KEY, models: models() }));
-
-router.post('/jobs', verifyToken, upload.single('file'), (req, res) => {
-  const phase = req.body.phase === 'extract' ? 'extract' : 'identify';
-  let file = null;
-  if (req.file) {
-    const fid = newId();
-    file = { buffer: req.file.buffer, filename: Buffer.from(req.file.originalname || 'notice', 'latin1').toString('utf8'), mimetype: req.file.mimetype, at: Date.now() };
-    // multer 가 이미 UTF-8 이름을 주는 경우를 위해 깨짐 여부 확인
-    if (/Ã|ì|ë|í/.test(file.filename) && !/[가-힣]/.test(file.filename)) file.filename = req.file.originalname;
-    files.set(fid, file);
-    file.id = fid;
-  } else if (req.body.fileId && files.has(req.body.fileId)) {
-    file = files.get(req.body.fileId); file.at = Date.now();
+  const nn = Object.keys(nonlife || {});
+  if (nn.length) {
+    s += '\n[손해보험사 참고 — 수수료표 입력 항목(상품 라벨 대신 tag 사용)]\n';
+    for (const n of nn) s += `■ ${n}: ${JSON.stringify(nonlife[n])}\n`;
   }
-  if (!file) return res.status(400).json({ error: '파일이 없거나 보관 시간이 지났습니다. 파일을 다시 올려 주세요.' });
-  const id = newId();
-  const job = { status: 'running', at: Date.now() };
-  jobs.set(id, job);
-  (async () => {
-    try {
-      if (phase === 'identify') job.result = Object.assign({ fileId: file.id }, await runIdentify(file, parseJsonField(req.body.companies)));
-      else job.result = await runExtract(file, parseJsonField(req.body.products) || {}, parseJsonField(req.body.nonlife) || {});
-      job.status = 'done';
-    } catch (e) {
-      console.error('[시책읽기] 실패:', e.message);
-      job.status = 'error'; job.error = e.message || '읽기에 실패했습니다.';
-    }
-    job.at = Date.now();
-  })();
-  res.json({ jobId: id, fileId: file.id });
-});
+  if (fileText) s += `\n[공지 내용 — 파일에서 추출한 텍스트]\n${fileText}\n`;
+  else s += '\n첨부한 공지 파일을 모두 읽고(표·이미지·각주 포함) 시책 규칙 JSON을 만드세요.\n';
+  return s;
+}
 
-router.get('/jobs/:id', verifyToken, (req, res) => {
-  const j = jobs.get(req.params.id);
-  if (!j) return res.status(404).json({ error: '작업을 찾을 수 없습니다(시간이 지났거나 서버가 다시 시작됨).' });
-  res.json({ status: j.status, result: j.status === 'done' ? j.result : undefined, error: j.error });
-});
+const IDENTIFY_PROMPT = `첨부된 보험사 시책 공지가 어느 보험사(들)의 것인지 찾아서 JSON만 출력하세요.
+형식: {"companies":["보험사 이름"],"period":"YYYY-MM 또는 빈 문자열"}
+- 보험사 이름은 아래 [보험사 목록]에 있는 이름 중 가장 알맞은 것을 그대로 고르세요. 목록에 없으면 공지에 적힌 이름을 쓰세요.
+- 공지가 여러 보험사 것을 함께 담고 있으면 모두 적습니다.`;
 
-module.exports = { router, verifyToken };
+module.exports = { SYSTEM_PROMPT, userPrompt, IDENTIFY_PROMPT };
