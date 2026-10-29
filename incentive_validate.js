@@ -28,6 +28,18 @@ function normTag(t) {
   return hit.length === 1 && t.length <= 14 ? hit[0] : t; // 짧은 이름이 한 상품군에만 해당하면 표준 이름으로, 아니면 그대로(추가 조건)
 }
 function normTagStr(s) { return String(s).split('+').map(g => g.split(',').map(normTag).filter(Boolean).join(',')).filter(Boolean).join('+'); }
+
+// AI가 'KB손해보험', '라이나손해보험'처럼 적어도 수수료표의 이름('KB손보', '에이스(라이나)')으로 맞춥니다
+function coKey(n) { return String(n || '').replace(/\(주\)|주식회사|[()\s]/g, '').replace(/손해보험|화재해상보험|화재해상|생명보험|손보|생보|보험|생명|라이프|화재|해상/g, ''); }
+function matchCompany(name, names) {
+  const n = norm(name); if (!n) return n;
+  if (names.includes(n)) return n;
+  const sq = squash(n); const bySq = names.find(x => squash(x) === sq); if (bySq) return bySq;
+  const k = coKey(n); if (!k) return n;
+  const exact = names.filter(x => coKey(x) === k); if (exact.length === 1) return exact[0];
+  const part = names.filter(x => { const kx = coKey(x); return kx && k.length >= 2 && kx.length >= 2 && (kx.includes(k) || k.includes(kx)); });
+  return part.length === 1 ? part[0] : n;
+}
 function validate(raw, ctx) {
   const warnings = [];
   const products = ctx.products || {};
@@ -39,6 +51,13 @@ function validate(raw, ctx) {
     const batch = Object.assign({ name: '', company: '', grp: 'life', source: ctx.filename || '', period: '', notes: '' }, b0.batch || {});
     batch.company = norm(batch.company);
     batch.grp = batch.grp === 'nonlife' ? 'nonlife' : 'life';
+    {
+      const lifeNames = Object.keys(products), nonNames = Object.keys(ctx.nonlife || {});
+      const first = batch.grp === 'nonlife' ? nonNames : lifeNames, second = batch.grp === 'nonlife' ? lifeNames : nonNames;
+      let m = matchCompany(batch.company, first);
+      if (!first.includes(m)) { const m2 = matchCompany(batch.company, second); if (second.includes(m2)) { m = m2; batch.grp = batch.grp === 'nonlife' ? 'life' : 'nonlife'; } }
+      if (m !== batch.company) { const old = batch.company; batch.company = m; if (batch.name) batch.name = batch.name.split(old).join(m); }
+    }
     batch.source = norm(batch.source) || ctx.filename || '';
     batch.name = norm(batch.name) || `${batch.company} ${batch.period || today.slice(0, 7)} 시책`;
     const labels = products[batch.company] || null;
@@ -54,6 +73,11 @@ function validate(raw, ctx) {
       r.title = norm(r.title).slice(0, 200) || `${batch.company} 시책 ${i + 1}`;
       r.calc = r.calc === 'fixed' ? 'fixed' : 'pct';
       r.value = Number(r.value) || 0;
+      if (r.itype !== 'tier' && r.itype !== 'note' && r.itype !== 'goods' && Array.isArray(r.tiers) && r.tiers.length) {
+        // AI가 구간표를 월·13차월 시책 형식으로 잘못 분류한 경우 구간 시상으로 바로잡음
+        if (r.itype === 'month13' || Number(r.pay_offset) >= 13) r.tier_bucket = 'm13';
+        r.itype = 'tier'; r.value = 0;
+      }
       r.stackable = r.stackable === 0 || r.stackable === false ? 0 : 1;
       r.review_note = r.review_note ? norm(r.review_note).slice(0, 400) : undefined;
       if (r.src_text) r.src_text = norm(r.src_text).slice(0, 300);
@@ -91,7 +115,8 @@ function validate(raw, ctx) {
             const sorted = [...withPrev].sort((a, b) => a.prev - b.prev);
             const mono = sorted.every((t, i) => i === 0 || t.pay >= sorted[i - 1].pay);
             const dupPrev = new Set(withPrev.map(t => t.prev)).size !== withPrev.length;
-            if (mins.size > 1 || !mono || dupPrev) addNote(r, '전기간 실적과 시상금의 짝이 공지 표와 맞는지 확인이 필요합니다 (이번 기간 기준이 서로 다르거나 시상금이 순서대로 늘지 않음)');
+            const samePairs = withPrev.every(t => t.min === t.prev) || (Array.isArray(r.prereq) && r.prereq.some(p => p && p.same_level));
+            if (!samePairs && (mins.size > 1 || !mono || dupPrev)) addNote(r, '전기간 실적과 시상금의 짝이 공지 표와 맞는지 확인이 필요합니다 (이번 기간 기준이 서로 다르거나 시상금이 순서대로 늘지 않음)');
           }
           if (Array.isArray(r.prereq)) r.prereq = r.prereq.filter(p => DATE.test(p.start || '') && DATE.test(p.end || ''));
           }
