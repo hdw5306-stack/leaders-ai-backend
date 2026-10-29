@@ -53,10 +53,24 @@ function validate(raw, ctx) {
     batch.grp = batch.grp === 'nonlife' ? 'nonlife' : 'life';
     {
       const lifeNames = Object.keys(products), nonNames = Object.keys(ctx.nonlife || {});
+      if (ctx.force && (lifeNames.includes(ctx.force) || nonNames.includes(ctx.force))) {
+        // 본사가 보험사를 직접 골라서 올린 경우: AI가 무엇을 적었든 선택한 보험사로 고정
+        const oldCo = batch.company;
+        batch.company = ctx.force; batch.grp = nonNames.includes(ctx.force) ? 'nonlife' : 'life';
+        if (batch.name) batch.name = oldCo && oldCo !== ctx.force && batch.name.includes(oldCo) ? batch.name.split(oldCo).join(ctx.force) : (batch.name.includes(ctx.force) ? batch.name : ctx.force + ' ' + batch.name);
+      } else {
+      const hint = ctx.filename || ''; // 파일 이름으로 손해/생명 구분
+      if (batch.grp === 'life' && /손보|손해|화재|해상/.test(hint) && !/생명|생보|라이프/.test(hint)) {
+        // 파일 이름이 손해보험인데 생명보험사로 읽힌 경우(예: 라이나손보 → 라이나생명) 바로잡음
+        const k = coKey(batch.company);
+        const cand = k ? nonNames.filter(x => { const kx = coKey(x); return kx && (kx.includes(k) || k.includes(kx)); }) : [];
+        if (cand.length === 1) { warnings.push(`파일 이름이 손해보험이라 보험사를 ${batch.company} → ${cand[0]}(으)로 바로잡았습니다. 결과를 꼭 확인해 주세요.`); batch.company = cand[0]; batch.grp = 'nonlife'; }
+      }
       const first = batch.grp === 'nonlife' ? nonNames : lifeNames, second = batch.grp === 'nonlife' ? lifeNames : nonNames;
       let m = matchCompany(batch.company, first);
       if (!first.includes(m)) { const m2 = matchCompany(batch.company, second); if (second.includes(m2)) { m = m2; batch.grp = batch.grp === 'nonlife' ? 'life' : 'nonlife'; } }
       if (m !== batch.company) { const old = batch.company; batch.company = m; if (batch.name) batch.name = batch.name.split(old).join(m); }
+      }
     }
     batch.source = norm(batch.source) || ctx.filename || '';
     batch.name = norm(batch.name) || `${batch.company} ${batch.period || today.slice(0, 7)} 시책`;
@@ -140,7 +154,7 @@ function validate(raw, ctx) {
           } else r.targets = fixed;
         } else if (batch.grp === 'life') delete r.targets;
       } else delete r.targets;
-      if (batch.grp === 'nonlife') { if (r.tag) r.tag = normTagStr(r.tag); if (Array.isArray(r.not_tags)) r.not_tags = r.not_tags.map(normTag).filter(Boolean); }
+      if (batch.grp === 'nonlife') { delete r.targets; if (r.tag) r.tag = normTagStr(r.tag); if (Array.isArray(r.not_tags)) r.not_tags = r.not_tags.map(normTag).filter(Boolean); }
       r.grp = batch.grp; r.company = batch.company;
       Object.keys(r).forEach(k => r[k] === undefined && delete r[k]);
       rules.push(r);
