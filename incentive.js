@@ -124,7 +124,7 @@ async function callAI({ system, content, maxOutput }) {
 // ── 단계별 처리 ──────────────────────────────────────────────
 async function runIdentify(file, companies) {
   const input = await toInput(file.buffer, file.filename, file.mimetype);
-  const content = [{ type: 'input_text', text: IDENTIFY_PROMPT + '\n\n[보험사 목록]\n' + (companies || []).join(', ') + (input.text ? '\n\n[공지 내용]\n' + input.text.slice(0, 20000) : '') }];
+  const content = [{ type: 'input_text', text: IDENTIFY_PROMPT + '\n\n[파일 이름] ' + file.filename + '\n\n[보험사 목록]\n' + (companies || []).join(', ') + (input.text ? '\n\n[공지 내용]\n' + input.text.slice(0, 20000) : '') }];
   if (input.filePart) content.push(input.filePart);
   if (input.imagePart) content.push(input.imagePart);
   const ai = await callAI({ system: '당신은 보험 시책 공지를 분류하는 도우미입니다. JSON만 출력합니다.', content, maxOutput: 600 });
@@ -133,14 +133,14 @@ async function runIdentify(file, companies) {
   return { companies: found.filter(c => !companies || known.has(c)), unknown: found.filter(c => companies && !known.has(c)), period: String(ai.json.period || ''), warnings: input.warnings, usage: ai.usage, model: ai.model };
 }
 
-async function runExtract(file, products, nonlife) {
+async function runExtract(file, products, nonlife, force) {
   const input = await toInput(file.buffer, file.filename, file.mimetype);
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' });
   const content = [{ type: 'input_text', text: userPrompt({ filename: file.filename, today, products, nonlife, fileText: input.text }) }];
   if (input.filePart) content.push(input.filePart);
   if (input.imagePart) content.push(input.imagePart);
   const ai = await callAI({ system: SYSTEM_PROMPT, content, maxOutput: 16000 });
-  const v = validate(ai.json, { products, today, filename: file.filename });
+  const v = validate(ai.json, { products, nonlife, force, today, filename: file.filename });
   const ruleCount = v.batches.reduce((a, b) => a + b.rules.length, 0);
   const review = v.batches.reduce((a, b) => a + b.rules.filter(r => r.review_note).length, 0);
   console.log(`[시책읽기] ${file.filename} → ${v.batches.length}묶음 ${ruleCount}건 (확인필요 ${review}건) 모델 ${ai.model} 토큰 입력 ${ai.usage.input_tokens || '?'} / 출력 ${ai.usage.output_tokens || '?'}`);
@@ -171,7 +171,7 @@ router.post('/jobs', verifyToken, upload.single('file'), (req, res) => {
   (async () => {
     try {
       if (phase === 'identify') job.result = Object.assign({ fileId: file.id }, await runIdentify(file, parseJsonField(req.body.companies)));
-      else job.result = await runExtract(file, parseJsonField(req.body.products) || {}, parseJsonField(req.body.nonlife) || {});
+      else job.result = await runExtract(file, parseJsonField(req.body.products) || {}, parseJsonField(req.body.nonlife) || {}, String(req.body.company || '').trim() || null);
       job.status = 'done';
     } catch (e) {
       console.error('[시책읽기] 실패:', e.message);
