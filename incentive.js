@@ -18,8 +18,8 @@ const express = require('express');
 const crypto = require('crypto');
 const multer = require('multer');
 const { toInput } = require('./incentive_files');
-const { SYSTEM_PROMPT, userPrompt, IDENTIFY_PROMPT } = require('./incentive_prompt');
-const { validate } = require('./incentive_validate');
+const { SYSTEM_PROMPT, userPrompt, IDENTIFY_PROMPT, TRANSCRIBE_PROMPT } = require('./incentive_prompt');
+const { validate, crossCheck } = require('./incentive_validate');
 
 const router = express.Router();
 const upload = multer({ limits: { fileSize: 15 * 1024 * 1024 } });
@@ -74,12 +74,14 @@ function parseJson(text) {
   }
 }
 
-async function callAI({ system, content, maxOutput }) {
+async function callAI({ system, content, maxOutput, rotate }) {
   if (!process.env.OPENAI_API_KEY) throw new Error('서버에 OPENAI_API_KEY 가 설정되지 않았습니다.');
   // OpenAI(json_object 모드)는 요청 본문(input)에도 'json' 이라는 단어가 있어야 합니다.
   content = content.map((c, i) => (i === 0 && c.type === 'input_text') ? { ...c, text: c.text + '\n\n(응답은 반드시 json 형식으로만 출력하세요.)' } : c);
   let lastErr = '';
-  for (const model of models()) {
+  const ml = models();
+  const order = rotate && ml.length > 1 ? ml.slice(rotate % ml.length).concat(ml.slice(0, rotate % ml.length)) : ml;
+  for (const model of order) {
     let noTemp = false;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -136,15 +138,40 @@ async function runIdentify(file, companies) {
 async function runExtract(file, products, nonlife, force) {
   const input = await toInput(file.buffer, file.filename, file.mimetype);
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' });
-  const content = [{ type: 'input_text', text: userPrompt({ filename: file.filename, today, products, nonlife, fileText: input.text }) }];
-  if (input.filePart) content.push(input.filePart);
-  if (input.imagePart) content.push(input.imagePart);
-  const ai = await callAI({ system: SYSTEM_PROMPT, content, maxOutput: 16000 });
-  const v = validate(ai.json, { products, nonlife, force, today, filename: file.filename });
+  const base = userPrompt({ filename: file.filename, today, products, nonlife, fileText: input.text });
+  const mk = (extra) => {
+    const c = [{ type: 'input_text', text: base + (extra || '') }];
+    if (input.filePart) c.push(input.filePart);
+    if (input.imagePart) c.push(input.imagePart);
+    return c;
+  };
+  const VERIFY = '\n\n[검증 읽기] 같은 공지를 처음부터 다시 읽는 두 번째 확인입니다. 표는 한 칸씩 (구간 머리글 ↔ 금액)의 짝을 따로 확인하고, 합쳐진 칸과 단위(만·원·%)를 특히 주의해서 읽으세요.';
+  const trContent = [{ type: 'input_text', text: TRANSCRIBE_PROMPT + '\n\n[파일 이름] ' + file.filename + (input.text ? '\n\n[공지 내용 — 파일에서 추출한 텍스트]\n' + input.text.slice(0, 40000) : '') }];
+  if (input.filePart) trContent.push(input.filePart);
+  if (input.imagePart) trContent.push(input.imagePart);
+  // 세 가지를 동시에: ① 시책 읽기(본 읽기) ② 독립적인 두 번째 읽기(다른 모델 우선) ③ 숫자 그대로 옮겨 적기
+  const [rA, rB, rT] = await Promise.allSettled([
+    callAI({ system: SYSTEM_PROMPT, content: mk(''), maxOutput: 16000 }),
+    callAI({ system: SYSTEM_PROMPT, content: mk(VERIFY), maxOutput: 16000, rotate: 1 }),
+    callAI({ system: '당신은 공지의 숫자를 정확히 옮겨 적는 도우미입니다. JSON만 출력합니다.', content: trContent, maxOutput: 16000 }),
+  ]);
+  if (rA.status !== 'fulfilled') throw rA.reason;
+  const ai = rA.value;
+  const ctx = { products, nonlife, force, today, filename: file.filename };
+  const v = validate(ai.json, ctx);
+  const warnings = input.warnings.concat(v.warnings);
+  let vB = null, tr = null;
+  if (rB.status === 'fulfilled') { try { vB = validate(rB.value.json, ctx); } catch (e) { warnings.push('두 번째 읽기 결과를 처리하지 못했습니다: ' + e.message); } } else warnings.push('두 번째 읽기에 실패했습니다: ' + String(rB.reason && rB.reason.message || rB.reason).slice(0, 120));
+  if (rT.status === 'fulfilled') tr = rT.value.json; else warnings.push('공지 숫자 옮겨 적기에 실패했습니다: ' + String(rT.reason && rT.reason.message || rT.reason).slice(0, 120));
+  const cc = crossCheck(v.batches, vB ? vB.batches : null, tr);
+  cc.warnings.forEach(w => warnings.push(w));
+  v.batches.forEach(b => { b.batch.notes = (b.batch.notes ? b.batch.notes + ' ' : '') + cc.summary + '.'; });
   const ruleCount = v.batches.reduce((a, b) => a + b.rules.length, 0);
   const review = v.batches.reduce((a, b) => a + b.rules.filter(r => r.review_note).length, 0);
-  console.log(`[시책읽기] ${file.filename} → ${v.batches.length}묶음 ${ruleCount}건 (확인필요 ${review}건) 모델 ${ai.model} 토큰 입력 ${ai.usage.input_tokens || '?'} / 출력 ${ai.usage.output_tokens || '?'}`);
-  return { batches: v.batches, warnings: input.warnings.concat(v.warnings), usage: ai.usage, model: ai.model };
+  const usage = { input_tokens: 0, output_tokens: 0 };
+  [rA, rB, rT].forEach(r => { if (r.status === 'fulfilled' && r.value.usage) { usage.input_tokens += r.value.usage.input_tokens || 0; usage.output_tokens += r.value.usage.output_tokens || 0; } });
+  console.log(`[시책읽기] ${file.filename} → ${v.batches.length}묶음 ${ruleCount}건 (확인필요 ${review}건) · ${cc.summary} · 모델 ${ai.model}/${rB.status === 'fulfilled' ? rB.value.model : '-'} 토큰 입력 ${usage.input_tokens} / 출력 ${usage.output_tokens}`);
+  return { batches: v.batches, warnings, usage, model: ai.model, verify: { second: !!vB, transcript: !!tr, total: cc.total, agreed: cc.agreed, flagged: cc.flagged } };
 }
 
 function parseJsonField(v) { if (!v) return null; try { return JSON.parse(v); } catch (e) { return null; } }
