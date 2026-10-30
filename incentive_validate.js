@@ -19,11 +19,13 @@ function monthRange(period, today) {
   return [`${y}-${p(mo)}-01`, `${y}-${p(mo)}-${p(last)}`];
 }
 
-const STD_CATS = ['상해(운전자)', '건강(의료)', '어린이', '유병자', '연금·저축', '화재·재물', '펫', '치아', '간병'];
-const CAT_WORDS = [['펫', ['펫', '반려']], ['화재·재물', ['화재', '재물', '단체']], ['상해(운전자)', ['운전자', '상해']], ['치아', ['치아']], ['간병', ['간병', '치매']], ['연금·저축', ['연금', '저축']], ['어린이', ['어린이']], ['유병자', ['유병자', '간편']], ['건강(의료)', ['건강', '의료', '실손']]];
+const STD_CATS = ['상해(운전자)', '건강(의료)', '어린이', '유병자', '연금·저축', '화재·재물', '펫', '치아', '간병', '실손', '단체'];
+const TAG_ALIAS = { '재물&단체': '화재·재물', '재물·단체': '화재·재물', '재물 & 단체': '화재·재물', '단독실손': '실손', '실손보험': '실손', '단체보험': '단체' };
+const CAT_WORDS = [['펫', ['펫', '반려']], ['화재·재물', ['화재', '재물']], ['실손', ['실손']], ['단체', ['단체']], ['상해(운전자)', ['운전자', '상해']], ['치아', ['치아']], ['간병', ['간병', '치매']], ['연금·저축', ['연금', '저축']], ['어린이', ['어린이']], ['유병자', ['유병자', '간편']], ['건강(의료)', ['건강', '의료', '실손']]];
 function normTag(t) {
   t = String(t || '').replace(/\s+/g, ' ').trim();
   if (!t || STD_CATS.includes(t)) return t;
+  if (TAG_ALIAS[t]) return TAG_ALIAS[t];
   const hit = CAT_WORDS.filter(([, ws]) => ws.some(w => t.includes(w))).map(([k]) => k);
   return hit.length === 1 && t.length <= 14 ? hit[0] : t; // 짧은 이름이 한 상품군에만 해당하면 표준 이름으로, 아니면 그대로(추가 조건)
 }
@@ -93,6 +95,24 @@ function validate(raw, ctx) {
         r.itype = 'tier'; r.value = 0;
       }
       r.stackable = r.stackable === 0 || r.stackable === false ? 0 : 1;
+      if (r.itype !== 'note' && r.itype !== 'goods') {
+        const tx = `${r.title || ''} ${r.src_text || ''} ${r.memo || ''}`;
+        if (/현금/.test(tx) && /(여행|바우처|상품권|골드|(?:^|[^현])금\s*\d+\.?\d*돈|포인트|택\s*1|택일)/.test(tx) && !/현금\s*선택/.test(r.title || '')) {
+          r.title = norm(String(r.title || '').slice(0, 180) + ' (현금 선택 시)');
+          r.memo = norm(((r.memo ? r.memo + ' · ' : '') + '여행·상품 대신 현금으로 받는 경우의 금액입니다').slice(0, 500));
+        }
+      }
+      if (r.pay_offset != null && r.pay_offset !== '') {
+        let po = Math.round(Number(r.pay_offset)) || 0;
+        if (po > 16) po = 16;
+        if (po >= 4 && po <= 12) addNote(r, `지급 시기 ${po}차월은 드문 값입니다 — 공지 확인 필요`);
+        r.pay_offset = po > 0 ? po : undefined;
+      }
+      if (Array.isArray(r.prod_kw)) {
+        const seenKw = new Set();
+        r.prod_kw = r.prod_kw.map(x => norm(x).slice(0, 40)).filter(x => x.length >= 2 && !seenKw.has(x) && seenKw.add(x)).slice(0, 60);
+        if (!r.prod_kw.length || batch.grp !== 'nonlife') delete r.prod_kw;
+      } else delete r.prod_kw;
       r.review_note = r.review_note ? norm(r.review_note).slice(0, 400) : undefined;
       if (r.src_text) r.src_text = norm(r.src_text).slice(0, 300);
       if (r.memo) r.memo = norm(r.memo).slice(0, 500);
@@ -155,6 +175,13 @@ function validate(raw, ctx) {
         } else if (batch.grp === 'life') delete r.targets;
       } else delete r.targets;
       if (batch.grp === 'nonlife') { delete r.targets; if (r.tag) r.tag = normTagStr(r.tag); if (Array.isArray(r.not_tags)) r.not_tags = r.not_tags.map(normTag).filter(Boolean); }
+      // 안전장치: 손해보험에서 '일부 상품에만 적용'이라고 읽었는데 상품군 조건(tag)이 비어 있으면, 보험사 전체에 적용되는 오류가 나므로
+      // 범위 미정('?범위미정')으로 표시해 본사가 정하기 전까지 계산에서 제외하고 확정도 막습니다.
+      if (batch.grp === 'nonlife' && r.itype !== 'note' && r.itype !== 'goods' && !r.tag && !(r.prod_kw && r.prod_kw.length)) {
+        const mm = String(r.memo || '');
+        const limited = /상품\s*범위/.test(String(r.review_note || '')) || (/대상\s*상품\s*[:：]/.test(mm) && !/대상\s*상품\s*[:：]\s*(전체|모든|전 상품)/.test(mm));
+        if (limited) { r.tag = '?범위미정'; addNote(r, '일부 상품에만 적용되는 시책입니다 — 상품군을 정하기 전까지 계산에서 제외됩니다'); warnings.push(`${batch.company} · ${r.title}: 상품 범위 미정 (계산 제외)`); }
+      }
       r.grp = batch.grp; r.company = batch.company;
       Object.keys(r).forEach(k => r[k] === undefined && delete r[k]);
       rules.push(r);
