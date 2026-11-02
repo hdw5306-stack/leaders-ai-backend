@@ -219,7 +219,10 @@ function validate(raw, ctx) {
             const mono = sorted.every((t, i) => i === 0 || t.pay >= sorted[i - 1].pay);
             const dupPrev = new Set(withPrev.map(t => t.prev)).size !== withPrev.length;
             const samePairs = withPrev.every(t => t.min === t.prev) || (Array.isArray(r.prereq) && r.prereq.some(p => p && p.same_level));
-            if (samePairs) addNote(r, '연속가동 짝 확인: 두 번째 기간 기준이 구간마다 똑같은 구간인지, 합쳐진 한 칸(모든 구간 공통 기준)인지 공지 표에서 확인 필요');
+            // 공지에 행마다 두 기간의 기준이 따로 적혀 있으면("50만↑ 50만↑ 300만, 40만↑ 40만↑ 200만") 합쳐진 칸이 아니라고 확실하므로 경고하지 않습니다
+            const rowPairs = (String(r.src_text || '').match(/(\d+(?:\.\d+)?)\s*만\s*원?\s*↑\s*[,/·\s]?\s*\1\s*만\s*원?\s*↑/g) || []).length;
+            const explicitRows = withPrev.every(t => t.min === t.prev) && rowPairs >= withPrev.length;
+            if (samePairs && !explicitRows) addNote(r, '연속가동 짝 확인: 두 번째 기간 기준이 구간마다 똑같은 구간인지, 합쳐진 한 칸(모든 구간 공통 기준)인지 공지 표에서 확인 필요');
             if (!samePairs && (mins.size > 1 || !mono || dupPrev)) addNote(r, '전기간 실적과 시상금의 짝이 공지 표와 맞는지 확인이 필요합니다 (이번 기간 기준이 서로 다르거나 시상금이 순서대로 늘지 않음)');
           }
           if (Array.isArray(r.prereq)) r.prereq = r.prereq.filter(p => DATE.test(p.start || '') && DATE.test(p.end || ''));
@@ -424,6 +427,9 @@ function applyPayTiming(rules, text, company, warnings) {
 function calmCountNotes(rules) {
   rules.forEach(r => {
     if (r.itype !== 'note') return;
+    if (r.review_note && /^확인 필요 — 여러 달 연속 조건이라 계산 제외$|여러 달 연속 조건이라 계산에서 제외|여러 달 연속 조건이라 계산 제외/.test(r.review_note) && r.review_note.length < 120) {
+      r.review_note = ''; r.memo = norm(((r.memo ? r.memo + ' · ' : '') + '여러 달에 걸친 조건이라 계산하지 않고 안내로 둡니다').slice(0, 500)); return;
+    }
     if (!/건수|누계/.test(`${r.title || ''} ${r.src_text || ''} ${r.memo || ''}`) || !r.review_note) return;
     if (!/건수|누계|구간표를 읽지 못해/.test(r.review_note)) return;
     r.review_note = '';
@@ -544,6 +550,12 @@ function crossCheck(outA, outB, tr, srcText) {
         else { bestB = best; used.add(best); const d = diffText(a, best); if (d.length) msgs.push('두 번 읽은 결과가 다릅니다 — ' + d.slice(0, 3).join(' / ')); }
       }
       applyMinFromConds(a, tr);
+      // 프로그램이 판정하지 못하는 추가 조건(보장구성비 등)이나, 최소 보험료인지 불분명한 "30만↑"가 붙은 월 시책은 사람이 확인하도록 표시
+      if (a.itype !== 'tier' && !a.min_premium) {
+        const q = `${a.title || ''} ${a.src_text || ''}`;
+        if (/보장\s*구성비|구성비\s*\d+\s*%/.test(q)) msgs.push('공지의 추가 조건(보장구성비 등)은 프로그램이 판정하지 못합니다 — 이 시책이 모든 계약에 계산되는 점을 확인하세요');
+        else if (/\d+(?:\.\d+)?\s*만\s*원?\s*↑\s*(?:&|및|\+)/.test(q)) msgs.push('공지의 "N만↑" 조건이 건당 최소 보험료인지 확인 필요 (지금은 모든 계약에 계산됨)');
+      }
       // 독립적인 대조가 전혀 없어도, 항목의 숫자가 자기가 인용한 공지 문구(src_text)와 다르면 걸러냅니다
       if (a.calc === 'pct' && a.value > 0 && a.src_text) {
         const ps = []; String(a.src_text).replace(/(\d+(?:\.\d+)?)\s*%/g, (m, x) => { ps.push(parseFloat(x)); });
@@ -557,6 +569,8 @@ function crossCheck(outA, outB, tr, srcText) {
         if (au.msgs.length && a.itype === 'tier' && bestB && bestB.itype === 'tier' && Array.isArray(bestB.tiers) && !bAudit.msgs.length && (bAudit.specific || !tr)) {
           a.tiers = bestB.tiers.map(t => Object.assign({}, t)); au.msgs.length = 0; msgs.length = 0;
           msgs.push('첫 번째 읽기의 구간 금액이 공지 숫자와 달라 공지와 일치하는 두 번째 읽기 결과로 바꿨습니다');
+        } else if (au.msgs.length && a.itype === 'tier' && bestB && bestB.itype === 'tier' && (a.tiers || []).length && ruleSig(a).구간 === ruleSig(bestB).구간 && bAudit.msgs.length) {
+          au.msgs.length = 0;   // 두 번 읽은 결과가 구간표 숫자까지 똑같고 옮겨 적기만 다르면, 옮겨 적기가 그 표의 칸을 빠뜨렸거나 다른 표와 섞인 것으로 봅니다
         } else if (tr && !au.msgs.length && bestB && bAudit.msgs.length) {
           msgs.length = 0;
         }
