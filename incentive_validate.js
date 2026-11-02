@@ -282,7 +282,9 @@ function validate(raw, ctx) {
         rules.forEach(r => { if (r.itype !== 'note' && r.itype !== 'goods' && !r.cap_premium) { r.cap_premium = cap; n++; } });
         if (n) warnings.push(`${batch.company}: 공통기준 ‘건당 ${cap / 10000}만원 한도’를 시책 ${n}건에 적용`);
       } else if (caps.size > 1) {
-        rules.filter(r => r.itype === 'note').forEach(r => { if (capsFromText(`${r.title} ${r.src_text || ''} ${r.memo || ''}`).size) addNote(r, '건당 인정 한도가 여러 가지입니다 — 시책별 한도(cap)를 직접 확인하세요'); });
+        const list = [...caps].sort((a, b) => b - a).map(c => `${c / 10000}만원`).join('·');
+        rules.filter(r => r.itype === 'note').forEach(r => { if (capsFromText(`${r.title} ${r.src_text || ''} ${r.memo || ''}`).size) r.memo = norm(((r.memo ? r.memo + ' · ' : '') + `건당 인정 한도가 상품별로 여러 가지입니다(${list})`).slice(0, 500)); });
+        warnings.push(`${batch.company}: 건당 인정 한도가 여러 가지(${list})입니다. 시책에 이미 들어간 한도 외에 상품별로 다른 한도(예: 운전자보험 10만원)는 자동 반영되지 않으니 공지와 확인하세요.`);
       }
     }
     // 같은 상품에 같은 종류·같은 지급시점의 시책이 둘 이상 겹치면 합산되므로 눈에 띄게 표시
@@ -336,10 +338,18 @@ function offsetOk(r) {
   if (/익월|익익월/.test(t)) return o >= 1 && o <= 3;
   return false;
 }
-function diffText(a, b) {
+function diffText(a, b, support) {
   const sa = ruleSig(a), sb = ruleSig(b), out = [];
+  const sup = String(support || '') + ' ' + String(a.src_text || '') + ' ' + String(a.memo || '');
   for (const k of Object.keys(sa)) {
     if (String(sa[k]) === String(sb[k])) continue;
+    // 첫 번째 읽기가 공지 문구(공통기준)에 적힌 인정 한도를 담았고 두 번째 읽기는 빠뜨린 경우 — 공지가 뒷받침하므로 문제 삼지 않음
+    if (k === '한도' && a.cap_premium && !b.cap_premium && capsFromText(sup).has(Number(a.cap_premium))) continue;
+    // 제외 상품군: 두 번째 읽기가 첫 번째의 일부이고, 더 많은 쪽의 나머지가 공지 문구에 적혀 있으면 문제 삼지 않음
+    if (k === '제외') {
+      const ta = (a.not_tags || []), tb = (b.not_tags || []);
+      if (tb.every(t => ta.includes(t)) && ta.filter(t => !tb.includes(t)).every(t => sup.includes(String(t).replace(/보험$/, '')))) continue;
+    }
     if (k === '지급시기' && offsetOk(a)) continue;
     if (k === '상품군' && /펫|반려/.test(`${a.title || ''} ${a.src_text || ''}`) && /펫/.test(String(sa[k]))) continue;   // 반려견·반려묘 시상의 펫 조건은 공지 문구가 뒷받침
     if (k === '구간') {
@@ -547,7 +557,7 @@ function crossCheck(outA, outB, tr, srcText) {
       if (bGood) {
         const best = pickB(a, pool, used);
         if (!best) { if (!tr) msgs.push('두 번째 읽기에서는 이 항목이 나오지 않았습니다'); }
-        else { bestB = best; used.add(best); const d = diffText(a, best); if (d.length) msgs.push('두 번 읽은 결과가 다릅니다 — ' + d.slice(0, 3).join(' / ')); }
+        else { bestB = best; used.add(best); const d = diffText(a, best, tr ? `${tr.rules_text || ''} ${tr.text || ''}` : ''); if (d.length) msgs.push('두 번 읽은 결과가 다릅니다 — ' + d.slice(0, 3).join(' / ')); }
       }
       applyMinFromConds(a, tr);
       // 프로그램이 판정하지 못하는 추가 조건(보장구성비 등)이나, 최소 보험료인지 불분명한 "30만↑"가 붙은 월 시책은 사람이 확인하도록 표시
