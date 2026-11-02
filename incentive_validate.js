@@ -338,6 +338,7 @@ function diffText(a, b) {
   for (const k of Object.keys(sa)) {
     if (String(sa[k]) === String(sb[k])) continue;
     if (k === '지급시기' && offsetOk(a)) continue;
+    if (k === '상품군' && /펫|반려/.test(`${a.title || ''} ${a.src_text || ''}`) && /펫/.test(String(sa[k]))) continue;   // 반려견·반려묘 시상의 펫 조건은 공지 문구가 뒷받침
     if (k === '구간') {
       const f = x => (x.tiers || []).map(t => `${t.prev ? '전기간 ' + won(t.prev) + '+' : ''}${won(t.min)}↑ ${won(t.pay)}`).join(', ');
       out.push(`구간·금액 다름 → 다른 쪽 읽기: ${f(b)}`.slice(0, 220));
@@ -381,7 +382,11 @@ function auditAgainstTranscript(r, tr) {
     const useSet = spec ? new Set(spec.map(p => `${p.h}:${p.v}`)) : pairSet;
     res.specific = !!spec;
     const bad = r.tiers.filter(t => !t.prev && !useSet.has(`${t.min}:${t.pay}`));
-    const badPrev = r.tiers.filter(t => t.prev && valSet.size && !valSet.has(t.pay));
+    // 합쳐진 칸이 있는 표는 옮겨 적기가 일부 칸을 빠뜨릴 수 있습니다. 일부 칸은 확인되고 나머지는 시책이 인용한 공지 문구(src_text)에 그대로 적혀 있으면 문제 삼지 않습니다.
+    const prevTiers = r.tiers.filter(t => t.prev);
+    const okCnt = prevTiers.filter(t => valSet.has(t.pay)).length;
+    const inQuote = t => new RegExp(`(^|[^0-9.])${t.pay / 10000}\\s*만`).test(String(r.src_text || ''));
+    const badPrev = prevTiers.filter(t => valSet.size && !valSet.has(t.pay) && !(okCnt >= 1 && inQuote(t)));
     if (bad.length) res.msgs.push(`공지 ${spec ? '해당 표' : '표'}에서 ${bad.slice(0, 2).map(t => `${won(t.min)}↑→${won(t.pay)}`).join(', ')}${bad.length > 2 ? ' 등' : ''} 짝을 찾지 못했습니다`);
     if (badPrev.length) res.msgs.push(`시상금 ${badPrev.slice(0, 2).map(t => won(t.pay)).join(', ')}이(가) 공지에서 확인되지 않습니다`);
   } else if (r.itype !== 'tier' && r.itype !== 'note' && r.itype !== 'goods') {
@@ -415,6 +420,17 @@ function applyPayTiming(rules, text, company, warnings) {
   if (fixed.length) warnings.push(`${company}: 공지에 ‘익익월 지급’으로 적힌 시책 ${fixed.length}건의 지급 시기를 익익월(2개월 뒤)로 맞췄습니다 — ${fixed.slice(0, 3).join(', ')}`);
 }
 
+// ── 판매건수 누계처럼 계산 대상이 아닌 시상은 안내로 두고, 빨간 "확인 필요" 표시는 달지 않습니다 ──
+function calmCountNotes(rules) {
+  rules.forEach(r => {
+    if (r.itype !== 'note') return;
+    if (!/건수|누계/.test(`${r.title || ''} ${r.src_text || ''} ${r.memo || ''}`) || !r.review_note) return;
+    if (!/건수|누계|구간표를 읽지 못해/.test(r.review_note)) return;
+    r.review_note = '';
+    r.memo = norm(((r.memo ? r.memo + ' · ' : '') + '판매건수 누계 조건이라 계산하지 않고 안내로 둡니다').slice(0, 500));
+  });
+}
+
 // ── 설계사 등급·자격이 대상인 시상은 프로그램이 대상을 알 수 없으므로 계산에서 빼고 안내로 둡니다 ──
 const GRADE_RE = /플래티넘\s*FC|그린\s*플래티넘|\d{2}\s*Q\s*(?:그린|플래티넘|골드|실버|다이아)|MDRT|등급\s*(?:대상|한정|이상)/i;
 function applyGradeOnly(rules, trGrades, company, warnings) {
@@ -428,7 +444,7 @@ function applyGradeOnly(rules, trGrades, company, warnings) {
     let sum = '';
     if (Array.isArray(r.tiers) && r.tiers.length) sum = r.tiers.map(t => `${(t.min / 10000)}만↑ ${(t.pay / 10000)}만`).join(' · ');
     else if (r.value) sum = r.calc === 'pct' ? `${r.value}%` : `${Number(r.value).toLocaleString('ko-KR')}원`;
-    r.itype = 'note'; delete r.tiers; r.value = 0;
+    r.itype = 'note'; delete r.tiers; r.value = 0; r.review_note = '';
     r.memo = norm(((r.memo ? r.memo + ' · ' : '') + `등급·자격 대상 시상이라 계산에서 제외했습니다 (${sum || '내용은 공지 참조'})`).slice(0, 500));
     done.push(r.title);
   });
@@ -493,6 +509,7 @@ function crossCheck(outA, outB, tr, srcText) {
       const tt = tr ? [tr.rules_text, tr.text, (tr.percents || []).join(' '), (tr.pairs || []).map(p => `${p.ctx || ''}`).join(' ')].join(' ') : '';
       applyPayTiming(ba.rules, tt + ' ' + String(srcText || ''), ba.batch.company, warnings);
       applyGradeOnly(ba.rules, tr && tr.grades, ba.batch.company, warnings);
+      calmCountNotes(ba.rules);
       if (tr && ba.batch.grp === 'nonlife') reconcileProducts(ba.rules, tr.products, ba.batch.company, warnings);
     }
     if (tr) {
