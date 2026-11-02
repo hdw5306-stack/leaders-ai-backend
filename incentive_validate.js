@@ -175,6 +175,19 @@ function validate(raw, ctx) {
             if (!samePairs && (mins.size > 1 || !mono || dupPrev)) addNote(r, '전기간 실적과 시상금의 짝이 공지 표와 맞는지 확인이 필요합니다 (이번 기간 기준이 서로 다르거나 시상금이 순서대로 늘지 않음)');
           }
           if (Array.isArray(r.prereq)) r.prereq = r.prereq.filter(p => DATE.test(p.start || '') && DATE.test(p.end || ''));
+          // 연속가동: 본 기간(start~end)은 '나중 기간', prereq 는 '앞 기간'이어야 합니다. 둘이 같게 읽혔으면 원문의 기간들로 바로잡습니다.
+          if (Array.isArray(r.prereq) && r.prereq.length === 1 && r.prereq[0].start === r.start && r.prereq[0].end === r.end) {
+            const yr = +r.start.slice(0, 4), rm = +r.start.slice(5, 7), out2 = [];
+            const re = /(\d{1,2})\.(\d{1,2})\s*~\s*(?:(\d{1,2})\.)?(\d{1,2})/g; let m;
+            const iso = (mo, d) => `${yr + (mo < rm - 6 ? 1 : 0)}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+            while ((m = re.exec(String(r.src_text || '')))) out2.push([iso(+m[1], +m[2]), iso(+(m[3] || m[1]), +m[4])]);
+            if (out2.length >= 2 && out2[0][0] !== out2[out2.length - 1][0]) {
+              const first = out2[0], last = out2[out2.length - 1];
+              r.prereq = [Object.assign({}, r.prereq[0], { start: first[0], end: first[1], label: `${+first[0].slice(5, 7)}.${+first[0].slice(8)}~${+first[1].slice(5, 7)}.${+first[1].slice(8)}` })];
+              r.start = last[0]; r.end = last[1];
+              addNote(r, '연속가동의 앞·뒤 기간이 같게 읽혀 공지 원문의 기간 순서로 바로잡았습니다(앞 기간 → 뒤 기간) — 확인 필요');
+            } else addNote(r, '연속가동의 앞 기간과 뒤 기간이 같게 읽혔습니다 — 공지 표에서 기간 확인 필요');
+          }
           }
         }
       }
@@ -276,30 +289,50 @@ function diffText(a, b) {
   }
   return out;
 }
-function auditAgainstTranscript(r, tr) {
-  const msgs = [];
-  if (!tr) return msgs;
-  const pairSet = new Set(), valSet = new Set(), pctSet = new Set();
-  (tr.pairs || []).forEach(p => {
+function trPairs(tr) {
+  const out = [];
+  (tr && tr.pairs || []).forEach(p => {
+    if (/%/.test(String(p.value))) return;
     const h = parseWon(p.head), v = parseWon(p.value);
-    if (v != null && !/%/.test(String(p.value))) valSet.add(v);
-    if (h != null && v != null && !/%/.test(String(p.value))) pairSet.add(`${h}:${v}`);
+    if (h != null && v != null) out.push({ ctx: String(p.ctx || ''), h, v });
   });
+  return out;
+}
+// 이 시책의 표(제목 + 시작일 행)에 해당하는 옮겨 적은 칸들만 골라냅니다. 못 찾으면 null.
+function tableSpecific(r, pairs) {
+  const m = /^\d{4}-(\d{2})-(\d{2})$/.exec(r.start || ''); if (!m) return null;
+  const mo = +m[1], d = +m[2];
+  const re = new RegExp(`(^|[^0-9])${mo}\\s*[.월/]\\s*${d}(?![0-9])`);
+  const groups = new Map();
+  pairs.forEach(p => { if (re.test(p.ctx)) { if (!groups.has(p.ctx)) groups.set(p.ctx, []); groups.get(p.ctx).push(p); } });
+  if (!groups.size) return null;
+  let best = null, bs = 0.25;
+  groups.forEach((g, ctx) => { const sc = simil(r.title, ctx); if (sc > bs) { bs = sc; best = g; } });
+  return best && best.length >= 2 ? best : null;
+}
+// 반환: { msgs: [...], specific: 표를 정확히 찾아 대조했는지 }
+function auditAgainstTranscript(r, tr) {
+  const res = { msgs: [], specific: false };
+  if (!tr) return res;
+  const pairs = trPairs(tr);
+  const pairSet = new Set(pairs.map(p => `${p.h}:${p.v}`)), valSet = new Set(pairs.map(p => p.v)), pctSet = new Set();
   const grabPct = t => { const re = /(\d+(?:\.\d+)?)\s*%/g; let x; while ((x = re.exec(String(t || '')))) pctSet.add(parseFloat(x[1])); };
   (tr.percents || []).forEach(grabPct); grabPct(tr.text); (tr.pairs || []).forEach(p => grabPct(p.value));
-  // 본문 텍스트의 "N만↑ M만" 짝도 인정
   const re2 = /(\d+(?:[.,]\d+)?)\s*만\s*원?\s*(?:↑|이상)\s*[:：]?\s*(\d+(?:[.,]\d+)?)\s*만/g; let y;
   while ((y = re2.exec(String(tr.text || '')))) { const h = Math.round(parseFloat(y[1].replace(/,/g, '')) * 1e4), v = Math.round(parseFloat(y[2].replace(/,/g, '')) * 1e4); pairSet.add(`${h}:${v}`); valSet.add(v); }
   if (r.itype === 'tier' && Array.isArray(r.tiers) && pairSet.size >= 2) {
-    const bad = r.tiers.filter(t => !t.prev && !pairSet.has(`${t.min}:${t.pay}`));
+    const spec = tableSpecific(r, pairs);
+    const useSet = spec ? new Set(spec.map(p => `${p.h}:${p.v}`)) : pairSet;
+    res.specific = !!spec;
+    const bad = r.tiers.filter(t => !t.prev && !useSet.has(`${t.min}:${t.pay}`));
     const badPrev = r.tiers.filter(t => t.prev && valSet.size && !valSet.has(t.pay));
-    if (bad.length) msgs.push(`공지 표에서 ${bad.slice(0, 2).map(t => `${won(t.min)}↑→${won(t.pay)}`).join(', ')}${bad.length > 2 ? ' 등' : ''} 짝을 찾지 못했습니다`);
-    if (badPrev.length) msgs.push(`시상금 ${badPrev.slice(0, 2).map(t => won(t.pay)).join(', ')}이(가) 공지에서 확인되지 않습니다`);
+    if (bad.length) res.msgs.push(`공지 ${spec ? '해당 표' : '표'}에서 ${bad.slice(0, 2).map(t => `${won(t.min)}↑→${won(t.pay)}`).join(', ')}${bad.length > 2 ? ' 등' : ''} 짝을 찾지 못했습니다`);
+    if (badPrev.length) res.msgs.push(`시상금 ${badPrev.slice(0, 2).map(t => won(t.pay)).join(', ')}이(가) 공지에서 확인되지 않습니다`);
   } else if (r.itype !== 'tier' && r.itype !== 'note' && r.itype !== 'goods') {
-    if (r.calc === 'pct' && pctSet.size >= 1 && r.value > 0 && !pctSet.has(r.value)) msgs.push(`${r.value}%가 공지의 % 표기에서 확인되지 않습니다`);
-    if (r.calc === 'fixed' && valSet.size >= 2 && r.value > 0 && !valSet.has(r.value)) msgs.push(`${won(r.value)}이(가) 공지에서 확인되지 않습니다`);
+    if (r.calc === 'pct' && pctSet.size >= 1 && r.value > 0 && !pctSet.has(r.value)) res.msgs.push(`${r.value}%가 공지의 % 표기에서 확인되지 않습니다`);
+    if (r.calc === 'fixed' && valSet.size >= 2 && r.value > 0 && !valSet.has(r.value)) res.msgs.push(`${won(r.value)}이(가) 공지에서 확인되지 않습니다`);
   }
-  return msgs;
+  return res;
 }
 // A 읽기 결과(out)에 B 읽기 결과와 옮겨 적기 대조 결과를 반영합니다. 반환: 요약 정보
 function crossCheck(outA, outB, tr) {
@@ -324,16 +357,23 @@ function crossCheck(outA, outB, tr) {
           const sc = simil(a.title, b.title) + (a.tag === b.tag ? 0.5 : 0) + ((a.tiers || []).filter(t => (b.tiers || []).some(u => u.min === t.min && (u.prev || 0) === (t.prev || 0))).length) * 0.2 + (a.value && a.value === b.value ? 0.5 : 0);
           if (sc > bs) { bs = sc; best = b; }
         });
-        if (!best) msgs.push('두 번째 읽기에서는 이 항목이 나오지 않았습니다');
+        if (!best) { if (!tr) msgs.push('두 번째 읽기에서는 이 항목이 나오지 않았습니다'); }
         else { bestB = best; used.add(best); const d = diffText(a, best); if (d.length) msgs.push('두 번 읽은 결과가 다릅니다 — ' + d.slice(0, 3).join(' / ')); }
       }
       const au = auditAgainstTranscript(a, tr);
-      // 첫 번째 읽기의 구간 금액이 공지 숫자와 어긋나는데 두 번째 읽기는 공지와 맞으면, 두 번째 읽기의 구간표로 교체
-      if (au.length && a.itype === 'tier' && bestB && bestB.itype === 'tier' && Array.isArray(bestB.tiers) && !auditAgainstTranscript(bestB, tr).length) {
-        a.tiers = bestB.tiers.map(t => Object.assign({}, t)); au.length = 0; msgs.length = 0;
-        msgs.push('첫 번째 읽기의 구간 금액이 공지 숫자와 달라 공지와 일치하는 두 번째 읽기 결과로 바꿨습니다');
+      const bAudit = bestB ? auditAgainstTranscript(bestB, tr) : { msgs: ['-'], specific: false };
+      if (au.specific && !au.msgs.length) {
+        // 공지의 해당 표와 한 칸씩 일치 — 두 번째 읽기와 달라도 신뢰
+        msgs.length = 0;
+      } else {
+        if (au.msgs.length && a.itype === 'tier' && bestB && bestB.itype === 'tier' && Array.isArray(bestB.tiers) && !bAudit.msgs.length && (bAudit.specific || !tr)) {
+          a.tiers = bestB.tiers.map(t => Object.assign({}, t)); au.msgs.length = 0; msgs.length = 0;
+          msgs.push('첫 번째 읽기의 구간 금액이 공지 숫자와 달라 공지와 일치하는 두 번째 읽기 결과로 바꿨습니다');
+        } else if (tr && !au.msgs.length && bestB && bAudit.msgs.length) {
+          msgs.length = 0; // 두 번째 읽기가 공지 숫자와 맞지 않으면 그쪽이 틀린 것으로 보고 무시
+        }
+        au.msgs.forEach(m => msgs.push(m));
       }
-      au.forEach(m => msgs.push(m));
       if (msgs.length) { flagged++; addNote(a, msgs.join(' · ')); } else agreed++;
     }
     const only = pool.filter(b => !used.has(b));
