@@ -391,7 +391,86 @@ function auditAgainstTranscript(r, tr) {
   return res;
 }
 // A 읽기 결과(out)에 B 읽기 결과와 옮겨 적기 대조 결과를 반영합니다. 반환: 요약 정보
-function crossCheck(outA, outB, tr) {
+
+// ── 구역 제목·각주에 "250% : 엠금융 익익월 지급"처럼 % 옆에 적힌 지급 시기를 시책에 반영 ──
+function applyPayTiming(rules, text, company, warnings) {
+  const t = String(text || '').replace(/\s+/g, ' ');
+  const pcts = new Set(); let x;
+  // "N% … 익익월" 처럼 % 바로 뒤(같은 괄호 안, 다른 %·지급시기 표기가 끼지 않는 범위)에 익익월이 올 때만 인정
+  const r1 = /(\d+(?:\.\d+)?)\s*%(?:(?!(?<!익)익월)[^%)/]){0,30}?익익월/g;
+  while ((x = r1.exec(t))) pcts.add(parseFloat(x[1]));
+  const money = r => r.itype !== 'note' && r.itype !== 'goods' && r.itype !== 'tier';
+  const fixed = [];
+  const setTo2 = r => { r.pay_offset = 2; r.memo = norm(((r.memo ? r.memo + ' · ' : '') + '지급 시기: 익익월 (공지 구역 제목 표기)').slice(0, 500)); fixed.push(r.title); };
+  // ① 규칙 자체에 익익월이 적혀 있는데 지급 시기가 다르면 바로잡음
+  rules.forEach(r => { if (!money(r) || r.pay_offset === 2) return; if (/익익월/.test(`${r.title || ''} ${r.src_text || ''}`) && !/13\s*(회차|차월)/.test(`${r.title || ''} ${r.src_text || ''}`)) setTo2(r); });
+  // ② 공지의 "N% … 익익월" 표기와 같은 %를 가진 월 시책
+  pcts.forEach(v => {
+    const c = rules.filter(r => money(r) && r.calc === 'pct' && Number(r.value) === v && r.pay_offset !== 2 && !(r.pay_offset >= 13));
+    if (!c.length) return;
+    const same = rules.filter(r => money(r) && r.calc === 'pct' && Number(r.value) === v && !(r.pay_offset >= 13));
+    const pick = same.length === 1 ? c : c.filter(r => /엠금융|익익월|자체|선지급/.test(`${r.title || ''} ${r.src_text || ''} ${r.memo || ''}`));
+    pick.forEach(setTo2);
+  });
+  if (fixed.length) warnings.push(`${company}: 공지에 ‘익익월 지급’으로 적힌 시책 ${fixed.length}건의 지급 시기를 익익월(2개월 뒤)로 맞췄습니다 — ${fixed.slice(0, 3).join(', ')}`);
+}
+
+// ── 설계사 등급·자격이 대상인 시상은 프로그램이 대상을 알 수 없으므로 계산에서 빼고 안내로 둡니다 ──
+const GRADE_RE = /플래티넘\s*FC|그린\s*플래티넘|\d{2}\s*Q\s*(?:그린|플래티넘|골드|실버|다이아)|MDRT|등급\s*(?:대상|한정|이상)/i;
+function applyGradeOnly(rules, trGrades, company, warnings) {
+  const gtxt = (Array.isArray(trGrades) ? trGrades : []).join(' ');
+  const done = [];
+  rules.forEach(r => {
+    if (r.itype === 'note' || r.itype === 'goods') return;
+    const hay = `${r.title || ''} ${r.src_text || ''}`;
+    const hit = GRADE_RE.test(hay) || (gtxt && GRADE_RE.test(gtxt) && simil(r.title, gtxt) >= 0.35 && /플래티넘|그린|MDRT/i.test(gtxt) && simil(r.title, gtxt) >= 0.35);
+    if (!hit) return;
+    let sum = '';
+    if (Array.isArray(r.tiers) && r.tiers.length) sum = r.tiers.map(t => `${(t.min / 10000)}만↑ ${(t.pay / 10000)}만`).join(' · ');
+    else if (r.value) sum = r.calc === 'pct' ? `${r.value}%` : `${Number(r.value).toLocaleString('ko-KR')}원`;
+    r.itype = 'note'; delete r.tiers; r.value = 0;
+    r.memo = norm(((r.memo ? r.memo + ' · ' : '') + `등급·자격 대상 시상이라 계산에서 제외했습니다 (${sum || '내용은 공지 참조'})`).slice(0, 500));
+    done.push(r.title);
+  });
+  if (done.length) warnings.push(`${company}: 설계사 등급이 대상인 시상 ${done.length}건(${done.slice(0, 2).join(', ')})은 계산하지 않고 안내로 두었습니다.`);
+}
+
+// ── 공지에 적힌 상품명 목록(옮겨 적은 것)과 시책의 상품명 키워드를 맞춰 보고, 읽다가 달라진 이름을 바로잡음 ──
+function reconcileProducts(rules, trProducts, company, warnings) {
+  const P = [];
+  (Array.isArray(trProducts) ? trProducts : []).forEach(x => String(x || '').split(/[,，、\n]/).forEach(y => { y = norm(y); if (y.length >= 2) P.push(y); }));
+  if (P.length < 2) return;
+  const sq = v => squash(v);
+  const inP = k => P.some(p => sq(p).includes(sq(k)) || sq(k).includes(sq(p)));
+  let fixedN = 0, badN = 0;
+  rules.forEach(r => {
+    if (!Array.isArray(r.prod_kw) || !r.prod_kw.length) return;
+    const kws = r.prod_kw.slice();
+    const miss = kws.filter(k => !inP(k));
+    if (!miss.length) return;
+    // 목록 안에서 어느 상품이 이 시책 소속인지 알려면 시책 상품이 목록 전체와 같은 개수여야 가장 믿을 만함
+    const usedP = new Set(P.filter(p => kws.some(k => sq(p).includes(sq(k)) || sq(k).includes(sq(p)))));
+    const freeP = P.filter(p => !usedP.has(p));
+    const out = kws.slice();
+    if (kws.length === P.length) {
+      // 같은 개수·같은 순서이면 순서대로 짝지어 읽기 오류만 교체
+      kws.forEach((k, i) => { if (!inP(k)) { out[i] = P[i]; fixedN++; } });
+    } else {
+      const pool = freeP.slice();
+      kws.forEach((k, i) => {
+        if (inP(k)) return;
+        let best = -1, bs = 0.45; pool.forEach((p, j) => { const sc = simil(k, p); if (sc > bs) { bs = sc; best = j; } });
+        if (best >= 0) { out[i] = pool[best]; pool.splice(best, 1); fixedN++; } else badN++;
+      });
+    }
+    r.prod_kw = Array.from(new Set(out.flatMap(k => String(k).split('/').map(z => norm(z)).filter(z => z.length >= 2))));
+    if (miss.length && out.some((k, i) => k !== kws[i])) r.memo = norm(((r.memo ? r.memo + ' · ' : '') + '상품명은 공지 각주 글자와 맞춰 바로잡음').slice(0, 500));
+  });
+  if (fixedN) warnings.push(`${company}: 읽는 도중 달라진 상품명 ${fixedN}개를 공지 각주의 글자에 맞춰 바로잡았습니다. 주력상품 목록을 원문과 한 번 더 대조하세요.`);
+  if (badN) warnings.push(`${company}: 공지 각주와 맞지 않는 상품명 ${badN}개가 남아 있습니다 — 주력상품 목록을 원문과 직접 대조하세요.`);
+}
+
+function crossCheck(outA, outB, tr, srcText) {
   const warnings = [];
   let total = 0, agreed = 0, flagged = 0;
   const money = r => r.itype !== 'note' && r.itype !== 'goods';
@@ -410,6 +489,12 @@ function crossCheck(outA, outB, tr) {
     const bb = outB ? outB.find(x => x.batch.company === ba.batch.company) : null;
     const pool = bb ? bb.rules.filter(money).slice() : [];
     // ① 두 번째 읽기가 믿을 만한지 먼저 판단: 첫 번째 읽기 항목 중 절반 이상을 찾아내지 못하면 두 번째 읽기는 부실한 것으로 보고 비교에 쓰지 않습니다
+    {
+      const tt = tr ? [tr.rules_text, tr.text, (tr.percents || []).join(' '), (tr.pairs || []).map(p => `${p.ctx || ''}`).join(' ')].join(' ') : '';
+      applyPayTiming(ba.rules, tt + ' ' + String(srcText || ''), ba.batch.company, warnings);
+      applyGradeOnly(ba.rules, tr && tr.grades, ba.batch.company, warnings);
+      if (tr && ba.batch.grp === 'nonlife') reconcileProducts(ba.rules, tr.products, ba.batch.company, warnings);
+    }
     if (tr) {
       const rt = (tr.rules_text || '') + ' ' + (tr.text || '');
       applyScopedCaps(ba.rules, rt, ba.batch.company, warnings);
