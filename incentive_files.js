@@ -10,7 +10,7 @@ const XLSX = require('xlsx');
 const MAX_TEXT = 350000;
 const MAX_PDF_PAGES = 14;
 
-// PDF → 쪽별 고해상도 PNG (가로 약 1700px, 세로가 길면 겹치게 나눔) + 글자 층 텍스트
+// PDF → 쪽별 고해상도 PNG (가로 약 1900px, 가로로 긴 띠로 겹치게 나눔) + 글자 층 텍스트
 async function loadPdfjs() {
   try { const nc = require('@napi-rs/canvas'); ['DOMMatrix', 'ImageData', 'Path2D'].forEach(k => { if (!globalThis[k] && nc[k]) globalThis[k] = nc[k]; }); } catch (e) { /* 아래에서 처리 */ }
   // 서버에 설치된 pdfjs-dist 가 4.x(.mjs)이든 3.x(.js)이든 모두 사용
@@ -37,20 +37,29 @@ async function rasterizePdf(buffer) {
       if (line) text += `\n=== ${i}쪽 글자 층 ===\n${line}\n`;
     } catch (e) { /* 글자 층 없음 */ }
     const v1 = page.getViewport({ scale: 1 });
-    const scale = Math.min(4, Math.max(1.5, 1700 / v1.width));
+    // 작은 글씨(각주·상품명)까지 읽도록 가로 약 1900px 로 그리고, 가로로 긴 띠로 잘라 보냅니다.
+    // (그림 한 장이 세로로 길면 AI 쪽에서 가로 768px 정도로 줄어들어 작은 글씨가 뭉개집니다)
+    const scale = Math.min(4, Math.max(1.5, 1900 / v1.width));
     const vp = page.getViewport({ scale });
     const w = Math.ceil(vp.width), h = Math.ceil(vp.height);
     const cv = createCanvas(w, h), ctx = cv.getContext('2d');
     ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
     await page.render({ canvasContext: ctx, viewport: vp, canvas: cv }).promise;
-    const CH = 1500, OV = 120;
-    const slices = h <= CH * 1.25 ? [[0, h]] : [];
-    if (!slices.length) for (let y = 0; y < h; y += CH - OV) { slices.push([y, Math.min(h, y + CH)]); if (y + CH >= h) break; }
+    const BH = n > 8 ? 1300 : n > 4 ? 900 : 640, OV = 110;
+    const slices = h <= BH * 1.2 ? [[0, h]] : [];
+    if (!slices.length) for (let y = 0; y < h; y += BH - OV) { slices.push([y, Math.min(h, y + BH)]); if (y + BH >= h) break; }
+    if (slices.length > 1) {
+      // 전체 모양(표 배치)을 보도록 줄인 전체 그림을 먼저 한 장
+      const ow = 900, oh = Math.round(h * ow / w), co = createCanvas(ow, oh);
+      co.getContext('2d').drawImage(cv, 0, 0, w, h, 0, 0, ow, oh);
+      images.push({ type: 'input_image', image_url: 'data:image/png;base64,' + co.toBuffer('image/png').toString('base64'), detail: 'high' });
+      images.push({ type: 'input_text', text: `(위 그림: ${i}쪽 전체를 줄여 놓은 것 — 표의 배치를 보는 용도입니다. 글자와 숫자는 아래 확대 조각에서 읽으세요)` });
+    }
     slices.forEach(([y0, y1], k) => {
       const sh = y1 - y0, c2 = createCanvas(w, sh);
       c2.getContext('2d').drawImage(cv, 0, y0, w, sh, 0, 0, w, sh);
       images.push({ type: 'input_image', image_url: 'data:image/png;base64,' + c2.toBuffer('image/png').toString('base64'), detail: 'high' });
-      images.push({ type: 'input_text', text: `(위 그림: ${i}쪽 ${slices.length > 1 ? `${k + 1}/${slices.length}번째 조각 — 조각 경계에서 표가 이어질 수 있음` : '전체'})` });
+      images.push({ type: 'input_text', text: `(위 그림: ${i}쪽 ${slices.length > 1 ? `확대 ${k + 1}/${slices.length}번째 띠 — 띠 경계에서 표가 이어질 수 있고 위아래 일부가 겹칩니다` : '전체'})` });
     });
     page.cleanup();
   }
