@@ -129,7 +129,7 @@ async function runIdentify(file, companies) {
   const content = [{ type: 'input_text', text: IDENTIFY_PROMPT + '\n\n[파일 이름] ' + file.filename + '\n\n[보험사 목록]\n' + (companies || []).join(', ') + (input.text ? '\n\n[공지 내용]\n' + input.text.slice(0, 20000) : '') }];
   if (input.filePart) content.push(input.filePart);
   if (input.imagePart) content.push(input.imagePart);
-  if (input.imageParts) input.imageParts.slice(0, 4).forEach(p => content.push(p));
+  if (input.imageParts) input.imageParts.slice(0, 6).forEach(p => content.push(p));
   const ai = await callAI({ system: '당신은 보험 시책 공지를 분류하는 도우미입니다. JSON만 출력합니다.', content, maxOutput: 600 });
   const found = Array.isArray(ai.json.companies) ? ai.json.companies.map(String) : [];
   const known = new Set(companies || []);
@@ -170,7 +170,7 @@ async function runExtract(file, products, nonlife, force) {
   let vB = null, tr = null;
   if (rB2.status === 'fulfilled') { try { vB = validate(rB2.value.json, ctx); } catch (e) { warnings.push('두 번째 읽기 결과를 처리하지 못했습니다: ' + e.message); } } else warnings.push('두 번째 읽기에 실패했습니다: ' + String(rB2.reason && rB2.reason.message || rB2.reason).slice(0, 120));
   if (rT2.status === 'fulfilled') tr = rT2.value.json; else warnings.push('공지 숫자 옮겨 적기에 실패했습니다: ' + String(rT2.reason && rT2.reason.message || rT2.reason).slice(0, 120));
-  const cc = crossCheck(v.batches, vB ? vB.batches : null, tr);
+  const cc = crossCheck(v.batches, vB ? vB.batches : null, tr, input.text || '');
   cc.warnings.forEach(w => warnings.push(w));
   v.batches.forEach(b => { b.batch.notes = (b.batch.notes ? b.batch.notes + ' ' : '') + cc.summary + '.'; });
   const ruleCount = v.batches.reduce((a, b) => a + b.rules.length, 0);
