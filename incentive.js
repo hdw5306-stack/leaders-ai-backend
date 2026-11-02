@@ -129,6 +129,7 @@ async function runIdentify(file, companies) {
   const content = [{ type: 'input_text', text: IDENTIFY_PROMPT + '\n\n[파일 이름] ' + file.filename + '\n\n[보험사 목록]\n' + (companies || []).join(', ') + (input.text ? '\n\n[공지 내용]\n' + input.text.slice(0, 20000) : '') }];
   if (input.filePart) content.push(input.filePart);
   if (input.imagePart) content.push(input.imagePart);
+  if (input.imageParts) input.imageParts.slice(0, 4).forEach(p => content.push(p));
   const ai = await callAI({ system: '당신은 보험 시책 공지를 분류하는 도우미입니다. JSON만 출력합니다.', content, maxOutput: 600 });
   const found = Array.isArray(ai.json.companies) ? ai.json.companies.map(String) : [];
   const known = new Set(companies || []);
@@ -143,12 +144,14 @@ async function runExtract(file, products, nonlife, force) {
     const c = [{ type: 'input_text', text: base + (extra || '') }];
     if (input.filePart) c.push(input.filePart);
     if (input.imagePart) c.push(input.imagePart);
+    if (input.imageParts) input.imageParts.forEach(p => c.push(p));
     return c;
   };
   const VERIFY = '\n\n[검증 읽기] 같은 공지를 처음부터 다시 읽는 두 번째 확인입니다. 표는 한 칸씩 (구간 머리글 ↔ 금액)의 짝을 따로 확인하고, 합쳐진 칸과 단위(만·원·%)를 특히 주의해서 읽으세요.';
   const trContent = [{ type: 'input_text', text: TRANSCRIBE_PROMPT + '\n\n[파일 이름] ' + file.filename + (input.text ? '\n\n[공지 내용 — 파일에서 추출한 텍스트]\n' + input.text.slice(0, 40000) : '') }];
   if (input.filePart) trContent.push(input.filePart);
   if (input.imagePart) trContent.push(input.imagePart);
+  if (input.imageParts) input.imageParts.forEach(p => trContent.push(p));
   // 세 가지를 동시에: ① 시책 읽기(본 읽기) ② 독립적인 두 번째 읽기(다른 모델 우선) ③ 숫자 그대로 옮겨 적기
   const [rA, rB, rT] = await Promise.allSettled([
     callAI({ system: SYSTEM_PROMPT, content: mk(''), maxOutput: 16000 }),
@@ -156,21 +159,25 @@ async function runExtract(file, products, nonlife, force) {
     callAI({ system: '당신은 공지의 숫자를 정확히 옮겨 적는 도우미입니다. JSON만 출력합니다.', content: trContent, maxOutput: 16000 }),
   ]);
   if (rA.status !== 'fulfilled') throw rA.reason;
+  // 보조 읽기 중 실패한 것은 한 번 더 시도합니다(실패하면 항목마다 경고가 붙어 믿고 쓰기 어려워지므로)
+  const redo = async (r, fn) => { if (r.status === 'fulfilled') return r; try { return { status: 'fulfilled', value: await fn() }; } catch (e) { return r; } };
+  const rT2 = await redo(rT, () => callAI({ system: '당신은 공지의 숫자를 정확히 옮겨 적는 도우미입니다. JSON만 출력합니다.', content: trContent, maxOutput: 12000, rotate: 1 }));
+  const rB2 = await redo(rB, () => callAI({ system: SYSTEM_PROMPT, content: mk(VERIFY), maxOutput: 16000, rotate: 2 }));
   const ai = rA.value;
   const ctx = { products, nonlife, force, today, filename: file.filename };
   const v = validate(ai.json, ctx);
   const warnings = input.warnings.concat(v.warnings);
   let vB = null, tr = null;
-  if (rB.status === 'fulfilled') { try { vB = validate(rB.value.json, ctx); } catch (e) { warnings.push('두 번째 읽기 결과를 처리하지 못했습니다: ' + e.message); } } else warnings.push('두 번째 읽기에 실패했습니다: ' + String(rB.reason && rB.reason.message || rB.reason).slice(0, 120));
-  if (rT.status === 'fulfilled') tr = rT.value.json; else warnings.push('공지 숫자 옮겨 적기에 실패했습니다: ' + String(rT.reason && rT.reason.message || rT.reason).slice(0, 120));
+  if (rB2.status === 'fulfilled') { try { vB = validate(rB2.value.json, ctx); } catch (e) { warnings.push('두 번째 읽기 결과를 처리하지 못했습니다: ' + e.message); } } else warnings.push('두 번째 읽기에 실패했습니다: ' + String(rB2.reason && rB2.reason.message || rB2.reason).slice(0, 120));
+  if (rT2.status === 'fulfilled') tr = rT2.value.json; else warnings.push('공지 숫자 옮겨 적기에 실패했습니다: ' + String(rT2.reason && rT2.reason.message || rT2.reason).slice(0, 120));
   const cc = crossCheck(v.batches, vB ? vB.batches : null, tr);
   cc.warnings.forEach(w => warnings.push(w));
   v.batches.forEach(b => { b.batch.notes = (b.batch.notes ? b.batch.notes + ' ' : '') + cc.summary + '.'; });
   const ruleCount = v.batches.reduce((a, b) => a + b.rules.length, 0);
   const review = v.batches.reduce((a, b) => a + b.rules.filter(r => r.review_note).length, 0);
   const usage = { input_tokens: 0, output_tokens: 0 };
-  [rA, rB, rT].forEach(r => { if (r.status === 'fulfilled' && r.value.usage) { usage.input_tokens += r.value.usage.input_tokens || 0; usage.output_tokens += r.value.usage.output_tokens || 0; } });
-  console.log(`[시책읽기] ${file.filename} → ${v.batches.length}묶음 ${ruleCount}건 (확인필요 ${review}건) · ${cc.summary} · 모델 ${ai.model}/${rB.status === 'fulfilled' ? rB.value.model : '-'} 토큰 입력 ${usage.input_tokens} / 출력 ${usage.output_tokens}`);
+  [rA, rB2, rT2].forEach(r => { if (r.status === 'fulfilled' && r.value.usage) { usage.input_tokens += r.value.usage.input_tokens || 0; usage.output_tokens += r.value.usage.output_tokens || 0; } });
+  console.log(`[시책읽기] ${file.filename} → ${v.batches.length}묶음 ${ruleCount}건 (확인필요 ${review}건) · ${cc.summary} · 모델 ${ai.model}/${rB2.status === 'fulfilled' ? rB2.value.model : '-'} 토큰 입력 ${usage.input_tokens} / 출력 ${usage.output_tokens}`);
   return { batches: v.batches, warnings, usage, model: ai.model, verify: { second: !!vB, transcript: !!tr, total: cc.total, agreed: cc.agreed, flagged: cc.flagged } };
 }
 
