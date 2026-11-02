@@ -55,6 +55,30 @@ function matchCompany(name, names) {
   const part = names.filter(x => { const kx = coKey(x); return kx && k.length >= 2 && kx.length >= 2 && (kx.includes(k) || k.includes(kx)); });
   return part.length === 1 ? part[0] : n;
 }
+
+// ── 건당 최소 보험료 조건("30만↑건 限") 자동 반영 ──
+const MINP_RE = /(\d+(?:\.\d+)?)\s*(천만|만|억)?\s*원?\s*(?:↑|이상)\s*건\s*(?:限|限定|한정|만\s*(?:인정|시상|적용))|(\d+(?:\.\d+)?)\s*(천만|만|억)?\s*원?\s*이상\s*(?:인|의)?\s*건에?\s*(?:한|限)/;
+function minpFrom(text) {
+  const m = MINP_RE.exec(String(text || '')); if (!m) return null;
+  const n = parseFloat(m[1] || m[3]), u = m[2] || m[4];
+  const v = Math.round(n * (u === '억' ? 1e8 : u === '천만' ? 1e7 : u === '만' ? 1e4 : 1));
+  return v >= 10000 ? v : null;
+}
+const COND_KEYS = ['재물', '단체', '인보험', '펫', '건강', '어린이', '운전자', '연금', '저축', '치아', '간병', '실손', '종신', '정기', '암'];
+// 옮겨 적은 조건 문구(tr.conds)에서 최소 보험료를 찾아 해당 시책에 적용 (열 이름이 맞는 시책만)
+function applyMinFromConds(r, tr) {
+  if (!tr || !Array.isArray(tr.conds) || r.min_premium) return;
+  if (r.itype === 'tier' || r.itype === 'note' || r.itype === 'goods') return;
+  const rt = `${r.title || ''} ${r.tag || ''}`;
+  for (const c0 of tr.conds) {
+    const c = String(c0 || ''), mp = minpFrom(c); if (!mp) continue;
+    const keys = COND_KEYS.filter(k => c.includes(k)); if (keys.length && !keys.some(k => rt.includes(k))) continue;
+    if (!keys.length && simil(r.title, c) < 0.2) continue;
+    if (c.includes('추가') && !rt.includes('추가')) continue;
+    if (c.includes('기본') && !c.includes('추가') && !rt.includes('기본')) continue;
+    r.min_premium = mp; r.memo = norm(((r.memo ? r.memo + ' · ' : '') + `건당 ${mp.toLocaleString('ko-KR')}원 이상 건만 인정 (공지 표 머리글)`).slice(0, 500)); return;
+  }
+}
 function validate(raw, ctx) {
   const warnings = [];
   const products = ctx.products || {};
@@ -126,6 +150,8 @@ function validate(raw, ctx) {
         r.prod_kw = r.prod_kw.map(x => norm(x).slice(0, 40)).filter(x => x.length >= 2 && !seenKw.has(x) && seenKw.add(x)).slice(0, 60);
         if (!r.prod_kw.length || batch.grp !== 'nonlife') delete r.prod_kw;
       } else delete r.prod_kw;
+      if (r.min_premium != null && r.min_premium !== '') { const mp = Math.round(Number(r.min_premium)); if (mp > 0) r.min_premium = mp; else delete r.min_premium; } else delete r.min_premium;
+      if (!r.min_premium && r.itype !== 'tier' && r.itype !== 'note' && r.itype !== 'goods') { const mp = minpFrom(`${r.src_text || ''} ${r.memo || ''} ${r.title || ''}`); if (mp) { r.min_premium = mp; r.memo = norm(((r.memo ? r.memo + ' · ' : '') + `건당 ${mp.toLocaleString('ko-KR')}원 이상 건만 인정`).slice(0, 500)); } }
       r.review_note = r.review_note ? norm(r.review_note).slice(0, 400) : undefined;
       if (r.src_text) r.src_text = norm(r.src_text).slice(0, 300);
       if (r.memo) r.memo = norm(r.memo).slice(0, 500);
@@ -278,10 +304,18 @@ function ruleSig(r) {
 }
 function bigrams(x) { const s = squash(x); const o = new Set(); for (let i = 0; i < s.length - 1; i++) o.add(s.slice(i, i + 2)); return o; }
 function simil(a, b) { const A = bigrams(a), B = bigrams(b); let n = 0; A.forEach(g => { if (B.has(g)) n++; }); return n / Math.max(1, Math.min(A.size, B.size)); }
+// 지급시기: 공지 문구(13회차 유지 → 13차월 이후, 익월 → 1~3차월)와 A 읽기가 스스로 맞으면 두 번째 읽기와 달라도 문제 삼지 않습니다
+function offsetOk(r) {
+  const t = `${r.title || ''} ${r.src_text || ''}`, o = Number(r.pay_offset) || 0;
+  if (/13\s*(회차|차월)|13차/.test(t)) return o >= 13;
+  if (/익월|익익월/.test(t)) return o >= 1 && o <= 3;
+  return false;
+}
 function diffText(a, b) {
   const sa = ruleSig(a), sb = ruleSig(b), out = [];
   for (const k of Object.keys(sa)) {
     if (String(sa[k]) === String(sb[k])) continue;
+    if (k === '지급시기' && offsetOk(a)) continue;
     if (k === '구간') {
       const f = x => (x.tiers || []).map(t => `${t.prev ? '전기간 ' + won(t.prev) + '+' : ''}${won(t.min)}↑ ${won(t.pay)}`).join(', ');
       out.push(`구간·금액 다름 → 다른 쪽 읽기: ${f(b)}`.slice(0, 220));
@@ -339,49 +373,65 @@ function crossCheck(outA, outB, tr) {
   const warnings = [];
   let total = 0, agreed = 0, flagged = 0;
   const money = r => r.itype !== 'note' && r.itype !== 'goods';
+  const pickB = (a, pool, used) => {
+    let cands = pool.filter(b => !used.has(b) && b.itype === a.itype && b.start === a.start && b.end === a.end);
+    if (!cands.length) cands = pool.filter(b => !used.has(b) && b.start === a.start && b.end === a.end);
+    let best = null, bs = -1;
+    cands.forEach(b => {
+      const sc = simil(a.title, b.title) + (a.tag === b.tag ? 0.5 : 0) + ((a.tiers || []).filter(t => (b.tiers || []).some(u => u.min === t.min && (u.prev || 0) === (t.prev || 0))).length) * 0.2 + (a.value && a.value === b.value ? 0.5 : 0);
+      if (sc > bs) { bs = sc; best = b; }
+    });
+    return best;
+  };
+  let bUsable = false;
   for (const ba of outA) {
     const bb = outB ? outB.find(x => x.batch.company === ba.batch.company) : null;
     const pool = bb ? bb.rules.filter(money).slice() : [];
+    // ① 두 번째 읽기가 믿을 만한지 먼저 판단: 첫 번째 읽기 항목 중 절반 이상을 찾아내지 못하면 두 번째 읽기는 부실한 것으로 보고 비교에 쓰지 않습니다
+    const aMoney = ba.rules.filter(money);
+    const probe = new Set(); let hit = 0;
+    aMoney.forEach(a => { const b = pickB(a, pool, probe); if (b) { probe.add(b); hit++; } });
+    const bGood = !!bb && aMoney.length > 0 && hit / aMoney.length >= 0.6;
+    if (bGood) bUsable = true;
     const used = new Set();
     for (const a of ba.rules) {
       if (!money(a)) continue;
       total++;
       const msgs = [];
       let bestB = null;
-      if (outB) {
-        // 같은 기간·유형 중 가장 비슷한 것, 없으면 같은 기간
-        let cands = pool.filter(b => !used.has(b) && b.itype === a.itype && b.start === a.start && b.end === a.end);
-        if (!cands.length) cands = pool.filter(b => !used.has(b) && b.start === a.start && b.end === a.end);
-        let best = null, bs = -1;
-        cands.forEach(b => {
-          const sc = simil(a.title, b.title) + (a.tag === b.tag ? 0.5 : 0) + ((a.tiers || []).filter(t => (b.tiers || []).some(u => u.min === t.min && (u.prev || 0) === (t.prev || 0))).length) * 0.2 + (a.value && a.value === b.value ? 0.5 : 0);
-          if (sc > bs) { bs = sc; best = b; }
-        });
+      if (bGood) {
+        const best = pickB(a, pool, used);
         if (!best) { if (!tr) msgs.push('두 번째 읽기에서는 이 항목이 나오지 않았습니다'); }
         else { bestB = best; used.add(best); const d = diffText(a, best); if (d.length) msgs.push('두 번 읽은 결과가 다릅니다 — ' + d.slice(0, 3).join(' / ')); }
+      }
+      applyMinFromConds(a, tr);
+      // 독립적인 대조가 전혀 없어도, 항목의 숫자가 자기가 인용한 공지 문구(src_text)와 다르면 걸러냅니다
+      if (a.calc === 'pct' && a.value > 0 && a.src_text) {
+        const ps = []; String(a.src_text).replace(/(\d+(?:\.\d+)?)\s*%/g, (m, x) => { ps.push(parseFloat(x)); });
+        if (ps.length && !ps.includes(Number(a.value))) msgs.push(`입력된 ${a.value}%가 인용한 공지 문구(${ps.join('·')}%)와 다릅니다`);
       }
       const au = auditAgainstTranscript(a, tr);
       const bAudit = bestB ? auditAgainstTranscript(bestB, tr) : { msgs: ['-'], specific: false };
       if (au.specific && !au.msgs.length) {
-        // 공지의 해당 표와 한 칸씩 일치 — 두 번째 읽기와 달라도 신뢰
-        msgs.length = 0;
+        msgs.length = 0; // 공지의 해당 표와 한 칸씩 일치 — 두 번째 읽기와 달라도 신뢰
       } else {
         if (au.msgs.length && a.itype === 'tier' && bestB && bestB.itype === 'tier' && Array.isArray(bestB.tiers) && !bAudit.msgs.length && (bAudit.specific || !tr)) {
           a.tiers = bestB.tiers.map(t => Object.assign({}, t)); au.msgs.length = 0; msgs.length = 0;
           msgs.push('첫 번째 읽기의 구간 금액이 공지 숫자와 달라 공지와 일치하는 두 번째 읽기 결과로 바꿨습니다');
         } else if (tr && !au.msgs.length && bestB && bAudit.msgs.length) {
-          msgs.length = 0; // 두 번째 읽기가 공지 숫자와 맞지 않으면 그쪽이 틀린 것으로 보고 무시
+          msgs.length = 0;
         }
         au.msgs.forEach(m => msgs.push(m));
       }
       if (msgs.length) { flagged++; addNote(a, msgs.join(' · ')); } else agreed++;
     }
-    const only = pool.filter(b => !used.has(b));
+    const only = bGood ? pool.filter(b => !used.has(b)) : [];
     if (only.length) warnings.push(`${ba.batch.company}: 두 번째 읽기에만 나온 항목 ${only.length}건 — ${only.slice(0, 3).map(b => `${b.title.slice(0, 24)}(${b.start}~${b.end})`).join(', ')}${only.length > 3 ? ' 등' : ''}. 공지에서 빠진 시책이 없는지 확인하세요.`);
   }
-  const how = [outB ? '두 번 읽기 비교' : null, tr ? '공지 숫자 대조' : null].filter(Boolean).join(' + ');
-  const summary = how ? `교차검증(${how}): 계산 대상 ${total}건 중 ${agreed}건 일치, ${flagged}건 확인 필요` : '교차검증을 하지 못했습니다(두 번째 읽기와 숫자 대조 모두 실패) — 공지와 직접 대조하세요';
-  return { warnings, summary, total, agreed, flagged };
+  const how = [bUsable ? '두 번 읽기 비교' : null, tr ? '공지 숫자 대조' : null].filter(Boolean).join(' + ');
+  if (!how && total) warnings.push('자동 대조를 하지 못했습니다(두 번째 읽기가 부실하고 숫자 옮겨 적기도 실패). 항목마다 경고를 붙이지 않았으니 공지와 직접 대조한 뒤 확정하세요.');
+  const summary = how ? `교차검증(${how}): 계산 대상 ${total}건 중 ${agreed}건 일치, ${flagged}건 확인 필요` : '자동 교차검증 불가 — 공지와 직접 대조 필요';
+  return { warnings, summary, total, agreed, flagged, bUsable };
 }
 
 module.exports = { validate, norm, crossCheck, parseWon };
