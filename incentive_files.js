@@ -92,14 +92,15 @@ async function toInput(buffer, filename, mimetype) {
     const filePart = { type: 'input_file', filename: filename || 'notice.pdf', file_data: 'data:application/pdf;base64,' + buffer.toString('base64') };
     // PDF 를 쪽마다 큰 그림으로 직접 그려서(고해상도, 길면 위·아래로 나눠서) 함께 보여 줍니다. 글자 층이 있으면 그 글자도 함께 줍니다.
     // 실패하면 예전처럼 PDF 파일만 첨부합니다(더 나빠지지 않음).
+    let why = '';
     try {
       const r = await rasterizePdf(buffer);
       if (r && r.images.length) {
         if (r.pages > MAX_PDF_PAGES) warnings.push(`PDF가 ${r.pages}쪽이라 앞 ${MAX_PDF_PAGES}쪽만 그림으로 읽었습니다. 나머지는 파일 본문으로만 읽으니 나누어 올리면 더 정확합니다.`);
         return { kind: 'pdf', filePart: r.pages > MAX_PDF_PAGES ? filePart : null, imageParts: r.images, text: r.text, warnings };
       }
-    } catch (e) { console.error('[시책읽기] PDF 그림 변환 실패 → 파일 그대로 첨부:', e.message); }
-    warnings.push('PDF를 그림으로 바꾸지 못해 파일 그대로 읽었습니다(정확도가 낮을 수 있습니다).');
+    } catch (e) { console.error('[시책읽기] PDF 그림 변환 실패 → 파일 그대로 첨부:', e.message); why = String(e.message || e).replace(/\s+/g, ' ').slice(0, 140); }
+    warnings.push('PDF를 그림으로 바꾸지 못해 파일 그대로 읽었습니다(정확도가 낮을 수 있습니다).' + (why ? ' 원인: ' + why : ''));
     return { kind: 'pdf', filePart, warnings };
   }
   if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) {
