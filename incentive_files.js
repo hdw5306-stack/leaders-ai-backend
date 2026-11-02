@@ -8,6 +8,43 @@ const JSZip = require('jszip');
 const XLSX = require('xlsx');
 
 const MAX_TEXT = 350000;
+const MAX_PDF_PAGES = 14;
+
+// PDF → 쪽별 고해상도 PNG (가로 약 1700px, 세로가 길면 겹치게 나눔) + 글자 층 텍스트
+async function rasterizePdf(buffer) {
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const { createCanvas } = require('@napi-rs/canvas');
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true, isEvalSupported: false, disableFontFace: true, verbosity: 0 }).promise;
+  const images = []; let text = '';
+  const n = Math.min(doc.numPages, MAX_PDF_PAGES);
+  for (let i = 1; i <= n; i++) {
+    const page = await doc.getPage(i);
+    try {
+      const tc = await page.getTextContent();
+      const line = tc.items.map(x => x.str).join(' ').replace(/\s+/g, ' ').trim();
+      if (line) text += `\n=== ${i}쪽 글자 층 ===\n${line}\n`;
+    } catch (e) { /* 글자 층 없음 */ }
+    const v1 = page.getViewport({ scale: 1 });
+    const scale = Math.min(4, Math.max(1.5, 1700 / v1.width));
+    const vp = page.getViewport({ scale });
+    const w = Math.ceil(vp.width), h = Math.ceil(vp.height);
+    const cv = createCanvas(w, h), ctx = cv.getContext('2d');
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
+    await page.render({ canvasContext: ctx, viewport: vp, canvas: cv }).promise;
+    const CH = 1500, OV = 120;
+    const slices = h <= CH * 1.25 ? [[0, h]] : [];
+    if (!slices.length) for (let y = 0; y < h; y += CH - OV) { slices.push([y, Math.min(h, y + CH)]); if (y + CH >= h) break; }
+    slices.forEach(([y0, y1], k) => {
+      const sh = y1 - y0, c2 = createCanvas(w, sh);
+      c2.getContext('2d').drawImage(cv, 0, y0, w, sh, 0, 0, w, sh);
+      images.push({ type: 'input_image', image_url: 'data:image/png;base64,' + c2.toBuffer('image/png').toString('base64'), detail: 'high' });
+      images.push({ type: 'input_text', text: `(위 그림: ${i}쪽 ${slices.length > 1 ? `${k + 1}/${slices.length}번째 조각 — 조각 경계에서 표가 이어질 수 있음` : '전체'})` });
+    });
+    page.cleanup();
+  }
+  const pages = doc.numPages; await doc.destroy();
+  return { images, text: text.trim(), pages };
+}
 
 function decodeXml(s) {
   return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
@@ -46,40 +83,24 @@ function hwpxXmlToText(xml) {
 }
 const num = f => Number((f.match(/(\d+)\.xml$/) || [0, 0])[1]);
 
-// 슬라이드의 글상자들을 "위치 순서"로 읽습니다. (표가 아니라 떠 있는 글상자로 만든 공지에서
-// '20년납 미만' 같은 조건 글상자가 어느 상품·% 와 한 줄인지 알 수 있게, 같은 높이의 글상자를 한 줄로 묶습니다.)
-function slidePositionalText(xml) {
-  const items = [];
-  const re = /<p:(sp|graphicFrame|pic)\b[\s\S]*?<\/p:\1>/g;
-  let m;
-  while ((m = re.exec(xml))) {
-    const blk = m[0];
-    const off = /<a:off x="(-?\d+)" y="(-?\d+)"\/>/.exec(blk);
-    const ext = /<a:ext cx="(\d+)" cy="(\d+)"\/>/.exec(blk);
-    const text = slideXmlToText(blk).replace(/\{[0-9A-Fa-f-]{36}\}/g, '').replace(/[ \t]+/g, ' ').split('\n').map(x => x.trim()).filter(Boolean).join(' / ');
-    if (!text || !off) continue;
-    const x = +off[1], y = +off[2], cy = ext ? +ext[2] : 0, cx = ext ? +ext[1] : 0;
-    items.push({ x, yc: y + cy / 2, cx, text });
-  }
-  if (!items.length) return '';
-  items.sort((a, b) => a.yc - b.yc || a.x - b.x);
-  const TOL = 230000; // 약 0.25인치
-  const lines = [];
-  for (const it of items) {
-    const last = lines[lines.length - 1];
-    if (last && Math.abs(it.yc - last.yc) <= TOL) { last.parts.push(it); last.yc = (last.yc * (last.parts.length - 1) + it.yc) / last.parts.length; }
-    else lines.push({ yc: it.yc, parts: [it] });
-  }
-  return lines.map(l => l.parts.sort((a, b) => a.x - b.x).map(p => p.text).join('   ⟷   ')).join('\n');
-}
-
 async function toInput(buffer, filename, mimetype) {
   const name = String(filename || '').toLowerCase();
   const ext = (name.match(/\.([a-z0-9]+)$/) || [, ''])[1];
   const warnings = [];
 
   if (ext === 'pdf' || mimetype === 'application/pdf') {
-    return { kind: 'pdf', filePart: { type: 'input_file', filename: filename || 'notice.pdf', file_data: 'data:application/pdf;base64,' + buffer.toString('base64') }, warnings };
+    const filePart = { type: 'input_file', filename: filename || 'notice.pdf', file_data: 'data:application/pdf;base64,' + buffer.toString('base64') };
+    // PDF 를 쪽마다 큰 그림으로 직접 그려서(고해상도, 길면 위·아래로 나눠서) 함께 보여 줍니다. 글자 층이 있으면 그 글자도 함께 줍니다.
+    // 실패하면 예전처럼 PDF 파일만 첨부합니다(더 나빠지지 않음).
+    try {
+      const r = await rasterizePdf(buffer);
+      if (r && r.images.length) {
+        if (r.pages > MAX_PDF_PAGES) warnings.push(`PDF가 ${r.pages}쪽이라 앞 ${MAX_PDF_PAGES}쪽만 그림으로 읽었습니다. 나머지는 파일 본문으로만 읽으니 나누어 올리면 더 정확합니다.`);
+        return { kind: 'pdf', filePart: r.pages > MAX_PDF_PAGES ? filePart : null, imageParts: r.images, text: r.text, warnings };
+      }
+    } catch (e) { console.error('[시책읽기] PDF 그림 변환 실패 → 파일 그대로 첨부:', e.message); }
+    warnings.push('PDF를 그림으로 바꾸지 못해 파일 그대로 읽었습니다(정확도가 낮을 수 있습니다).');
+    return { kind: 'pdf', filePart, warnings };
   }
   if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) {
     const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
@@ -111,14 +132,13 @@ async function toInput(buffer, filename, mimetype) {
     let text = '', emptyWithPic = 0;
     for (const s of slides) {
       const xml = await s.async('string');
-      const t = (slidePositionalText(xml) || slideXmlToText(xml)).trim();
+      const t = slideXmlToText(xml).trim();
       if (!t && /<p:pic>/.test(xml)) emptyWithPic++;
-      text += `\n=== 슬라이드 ${num(s.name)} (글상자를 위→아래, 같은 줄은 왼쪽→오른쪽 순서로 나열; ⟷ 는 같은 줄의 다른 글상자) ===\n${t}\n`;
+      text += `\n=== 슬라이드 ${num(s.name)} ===\n${t}\n`;
     }
     const plain = text.replace(/=== 슬라이드 \d+ ===/g, '').replace(/\s/g, '');
     if (plain.length < 200 && zip.file(/ppt\/media\//).length) throw new Error('이미지로 된 PowerPoint 파일입니다. PDF로 저장해서 올려 주세요.');
     if (emptyWithPic) warnings.push(`PowerPoint ${emptyWithPic}개 슬라이드는 이미지라 읽지 못했습니다. PDF로 저장해서 올리면 모두 읽을 수 있습니다.`);
-    warnings.push('PowerPoint는 글상자 위치 정보가 일부 사라져 "20년납 미만" 같은 조건이 엉뚱한 상품·%에 붙을 수 있습니다. PDF로 저장해서 올리면 가장 정확합니다.');
     return { kind: 'text', text: text.slice(0, MAX_TEXT), warnings };
   }
   if (ext === 'hwpx') {
