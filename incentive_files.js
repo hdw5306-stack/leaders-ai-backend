@@ -11,10 +11,22 @@ const MAX_TEXT = 350000;
 const MAX_PDF_PAGES = 14;
 
 // PDF → 쪽별 고해상도 PNG (가로 약 1700px, 세로가 길면 겹치게 나눔) + 글자 층 텍스트
+async function loadPdfjs() {
+  try { const nc = require('@napi-rs/canvas'); ['DOMMatrix', 'ImageData', 'Path2D'].forEach(k => { if (!globalThis[k] && nc[k]) globalThis[k] = nc[k]; }); } catch (e) { /* 아래에서 처리 */ }
+  // 서버에 설치된 pdfjs-dist 가 4.x(.mjs)이든 3.x(.js)이든 모두 사용
+  try { return await import('pdfjs-dist/legacy/build/pdf.mjs'); } catch (e1) {
+    try { const m = require('pdfjs-dist/legacy/build/pdf.js'); return m.getDocument ? m : (m.default || m); } catch (e2) { throw new Error('pdfjs-dist 를 불러오지 못했습니다: ' + String(e2.message || e2).slice(0, 80)); }
+  }
+}
 async function rasterizePdf(buffer) {
-  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const pdfjs = await loadPdfjs();
   const { createCanvas } = require('@napi-rs/canvas');
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true, isEvalSupported: false, disableFontFace: true, verbosity: 0 }).promise;
+  class NapiCanvasFactory {
+    create(w, h) { const canvas = createCanvas(Math.max(1, Math.ceil(w)), Math.max(1, Math.ceil(h))); return { canvas, context: canvas.getContext('2d') }; }
+    reset(cc, w, h) { cc.canvas.width = Math.max(1, Math.ceil(w)); cc.canvas.height = Math.max(1, Math.ceil(h)); }
+    destroy(cc) { cc.canvas.width = 0; cc.canvas.height = 0; cc.canvas = null; cc.context = null; }
+  }
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true, isEvalSupported: false, disableFontFace: true, verbosity: 0, canvasFactory: new NapiCanvasFactory(), CanvasFactory: NapiCanvasFactory }).promise;
   const images = []; let text = '';
   const n = Math.min(doc.numPages, MAX_PDF_PAGES);
   for (let i = 1; i <= n; i++) {
