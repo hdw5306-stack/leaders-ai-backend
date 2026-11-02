@@ -76,7 +76,29 @@ function applyMinFromConds(r, tr) {
     if (!keys.length && simil(r.title, c) < 0.2) continue;
     if (c.includes('추가') && !rt.includes('추가')) continue;
     if (c.includes('기본') && !c.includes('추가') && !rt.includes('기본')) continue;
-    r.min_premium = mp; r.memo = norm(((r.memo ? r.memo + ' · ' : '') + `건당 ${mp.toLocaleString('ko-KR')}원 이상 건만 인정 (공지 표 머리글)`).slice(0, 500)); return;
+    r.min_premium = mp; if (r.cap_premium && Number(r.cap_premium) === mp) delete r.cap_premium; r.title = norm(String(r.title || '').replace(/(\d+)\s*만\s*↑?\s*건\s*(?:한도|限)/, '건당 $1만원 이상')); r.memo = norm(((r.memo ? r.memo + ' · ' : '') + `건당 ${mp.toLocaleString('ko-KR')}원 이상 건만 인정 (공지 표 머리글)`).slice(0, 500)); return;
+  }
+}
+
+// ── 공통기준의 "입금보험료 30만원 이상건 30만원 한도인정" 같은 건당 인정 한도를 해당 범위(인보험)에만 적용 ──
+function applyScopedCaps(rules, trText, company, warnings) {
+  const s = String(trText || '');
+  const m = /입금\s*(?:보험료|P)\s*(\d+(?:\.\d+)?)\s*만\s*원?\s*이상\s*건?\s*(\d+(?:\.\d+)?)\s*만\s*원?\s*한도/.exec(s);
+  if (!m) return;
+  const cap = Math.round(parseFloat(m[2]) * 1e4);
+  const noGroup = /단체\s*보험\s*은\s*한도\s*미적용/.test(s);
+  let n = 0;
+  rules.forEach(r => {
+    if (r.itype === 'note' || r.itype === 'goods' || r.cap_premium) return;
+    const nt = (r.not_tags || []).join(',') + ' ' + (r.title || '');
+    const tag = String(r.tag || '');
+    if (noGroup && (/단체/.test(tag) || /단체/.test(r.title || ''))) return;   // 단체보험은 한도 미적용
+    if (/펫|재물|화재/.test(tag) || /펫보험|재물보험/.test(r.title || '')) return;   // 인보험 한도이므로 펫·재물은 제외
+    r.cap_premium = cap; n++;
+  });
+  if (n) {
+    const ex = /온가족든든[^.。\n]{0,40}(\d+)\s*만|치아[^.。\n]{0,20}(\d+)\s*만|운전자[^.。\n]{0,30}(\d+)\s*만/.test(s);
+    warnings.push(`${company}: 공지의 ‘입금보험료 ${m[1]}만원 이상 건 ${m[2]}만원 한도’를 인보험 시책 ${n}건에 적용했습니다.` + (ex ? ' 다만 온가족든든·치아·운전자보험은 더 낮은 한도(공지 참조)가 따로 있어 자동 반영되지 않습니다 — 해당 상품 계약은 보험료를 그 한도로 입력해 보세요.' : ''));
   }
 }
 function validate(raw, ctx) {
@@ -388,6 +410,13 @@ function crossCheck(outA, outB, tr) {
     const bb = outB ? outB.find(x => x.batch.company === ba.batch.company) : null;
     const pool = bb ? bb.rules.filter(money).slice() : [];
     // ① 두 번째 읽기가 믿을 만한지 먼저 판단: 첫 번째 읽기 항목 중 절반 이상을 찾아내지 못하면 두 번째 읽기는 부실한 것으로 보고 비교에 쓰지 않습니다
+    if (tr) {
+      const rt = (tr.rules_text || '') + ' ' + (tr.text || '');
+      applyScopedCaps(ba.rules, rt, ba.batch.company, warnings);
+      // 공지가 "13회차 유지 후 15차월 이후 지급"처럼 지급 시기를 밝히면 13회차 유지 시책의 지급 시기를 그에 맞춥니다
+      const pm = /13\s*(?:회차|차월)\s*유지[^.\n]{0,12}?(1[3-6])\s*차월\s*(?:이후|부터)?\s*지급/.exec(rt);
+      if (pm) { const N = +pm[1]; let n = 0; ba.rules.forEach(r => { if (['note', 'goods'].includes(r.itype)) return; if ((r.pay_offset >= 13 && r.pay_offset !== N) && /13\s*(회차|차월)/.test(`${r.title || ''} ${r.src_text || ''}`)) { r.pay_offset = N; n++; } }); if (n) warnings.push(`${ba.batch.company}: 공지의 ‘13회차 유지 후 ${N}차월 이후 지급’에 맞춰 지급 시기를 ${N}차월로 맞춘 시책 ${n}건`); }
+    }
     const aMoney = ba.rules.filter(money);
     const probe = new Set(); let hit = 0;
     aMoney.forEach(a => { const b = pickB(a, pool, probe); if (b) { probe.add(b); hit++; } });
