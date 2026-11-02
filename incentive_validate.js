@@ -498,6 +498,14 @@ function crossCheck(outA, outB, tr, srcText) {
       const sc = simil(a.title, b.title) + (a.tag === b.tag ? 0.5 : 0) + ((a.tiers || []).filter(t => (b.tiers || []).some(u => u.min === t.min && (u.prev || 0) === (t.prev || 0))).length) * 0.2 + (a.value && a.value === b.value ? 0.5 : 0);
       if (sc > bs) { bs = sc; best = b; }
     });
+    // 종류(월 시책 ↔ 구간표 등)가 다른 항목은 이름이 꽤 비슷할 때만 같은 시책으로 봅니다(엉뚱한 시책과 짝지어 거짓 경고가 나는 것을 막음)
+    if (best && best.itype !== a.itype && simil(a.title, best.title) < 0.5) return null;
+    // 같은 종류라도 이름·값·상품군·구간이 하나도 닮지 않았으면 같은 시책으로 보지 않습니다
+    if (best) {
+      const tierHit = (a.tiers || []).some(t => (best.tiers || []).some(u => u.min === t.min));
+      const like = simil(a.title, best.title) >= 0.35 || (a.value && a.value === best.value) || (a.tag && a.tag === best.tag) || tierHit;
+      if (!like) return null;
+    }
     return best;
   };
   let bUsable = false;
