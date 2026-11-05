@@ -9,7 +9,7 @@ const squash = x => norm(x).replace(/\s/g, '');
 
 // 공지 원문(src_text)에 "5만↑ 3만, 10만↑ 5만" 처럼 구간과 금액이 함께 적혀 있으면 {구간(원) → 시상금(원)} 으로 읽어 AI가 읽은 금액과 대조합니다.
 function pairsFromText(t) {
-  const m = new Map(), re = /(\d+(?:[.,]\d+)?)\s*만\s*원?\s*(?:↑|이상)\s*[:：]?\s*(\d+(?:[.,]\d+)?)\s*만/g;
+  const m = new Map(), re = /(\d+(?:[.,]\d+)?)\s*만\s*원?\s*(?:↑|이상)\s*[:：]?\s*(\d+(?:[.,]\d+)?)\s*만(?!\s*원?\s*(?:↑|이상))/g;
   let x; const n = v => Math.round(parseFloat(String(v).replace(/,/g, '')) * 10000);
   while ((x = re.exec(String(t || '')))) m.set(n(x[1]), n(x[2]));
   return m;
@@ -352,6 +352,11 @@ function diffText(a, b, support) {
       if (tagTok.length && [...ta, ...tb].every(t => !tagTok.includes(t) && !(t === '단체' && tagTok.includes('단체(1년)')))) continue;   // 상품군을 이미 좁게 지정했으면 다른 상품군 제외는 의미 없음
       if (tb.every(t => ta.includes(t)) && ta.filter(t => !tb.includes(t)).every(t => sup.includes(String(t).replace(/보험$/, '')))) continue;
     }
+    if (k === '단위' && a.itype === 'tier' && b.itype === 'tier') continue;   // 구간표는 단위(정액/비율)가 의미 없음
+    if (k === '제외' && (b.not_tags || []).length && !(a.not_tags || []).length) {   // 두 번째 읽기가 공지에 없는 제외 상품군을 붙인 경우는 문제 삼지 않음
+      if ((b.not_tags || []).every(t => !sup.includes(String(t).replace(/보험$/, '').replace(/\(.*\)/, '')))) continue;
+    }
+    if (k === '구간' && ((a.tiers || []).some(t => t.prev) || (b.tiers || []).some(t => t.prev)) && (a.tiers || []).map(t => t.pay).join() === (b.tiers || []).map(t => t.pay).join()) continue;   // 연속가동은 앞 기간 조건 표기만 다르고 지급액이 같으면 같은 것으로 봄
     if (k === '지급시기' && offsetOk(a)) continue;
     if (k === '상품군' && /펫|반려/.test(`${a.title || ''} ${a.src_text || ''}`) && /펫/.test(String(sa[k]))) continue;   // 반려견·반려묘 시상의 펫 조건은 공지 문구가 뒷받침
     if (k === '구간') {
