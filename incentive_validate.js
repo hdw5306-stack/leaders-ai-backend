@@ -575,11 +575,35 @@ function calmKnownNotes(rules) {
     const rn = String(r.review_note);
     if (/두 번 읽은 결과가 다릅니다|두 번째 읽기에서는 이 항목이 나오지 않았|공지 숫자|원문 기준|짝을 찾지/.test(rn)) return;   // 교차검증이 붙인 경고는 건드리지 않음
     let memo = '';
-    if (/상해\s*[·\/,]?\s*운전자[^.]{0,30}(하나의 상품군|함께 포함|묶여)|상해보험과 운전자보험이 함께|상해보험도 별도 운전자 규칙|일반\s*상해[^.]{0,60}(통합|같은 상품군|구분|적용)/.test(rn) && !/[0-9]+\s*만\s*원[^.]{0,10}(한도|초과)/.test(rn.replace(/운전자보험만 건당 인정 한도 10만원이 적용되도록 확인 필요/, ''))) memo = '상해(운전자)는 한 상품군으로 취급합니다(일반 상해보험과 운전자보험을 구분하지 않음)';
+    if (/상해\s*[·\/,]?\s*운전자[^.]{0,30}(하나의 상품군|함께 포함|묶여)|상해보험과 운전자보험이 함께|상해보험도 별도 운전자 규칙|일반\s*상해[^.]{0,60}(통합|같은 상품군|구분|적용)|일반\s*상해[^.]{0,80}운전자|운전자[^.]{0,80}일반\s*상해/.test(rn) && !/[0-9]+\s*만\s*원[^.]{0,10}(한도|초과)/.test(rn.replace(/운전자보험만 건당 인정 한도 10만원이 적용되도록 확인 필요/, ''))) memo = '상해(운전자)는 한 상품군으로 취급합니다(일반 상해보험과 운전자보험을 구분하지 않음)';
     else if (r.itype === 'tier' && /운전자[^.]{0,40}(한도|별도)/.test(rn)) memo = '운전자 계약은 건당 인정 한도가 달라 구간 합산에는 자동 반영되지 않습니다(공통 안내 참조)';
     else if (/지급\s*예시[^.]{0,40}2028|실제 지급월 확인|13회차[^.]{0,80}(응당월|익월)[^.]{0,60}(확인|다르|상이)/.test(rn)) memo = '13회차 유지 확정 후 지급(공통기준 예시: 2026년 11월 계약 → 2028년 1월 지급)';
     if (memo) { r.review_note = ''; r.memo = norm(((r.memo ? r.memo + ' · ' : '') + memo).slice(0, 500)); }
   });
+}
+
+// ── 상품명 속 숫자(355입원, 간편31 등)를 설명 문장에서 비슷한 숫자로 잘못 적은 경우, 공지 각주 옮겨 적기의 숫자로 바로잡습니다 ──
+function fixProductDigits(rules, trProducts, company, warnings) {
+  const P = (Array.isArray(trProducts) ? trProducts : []).join(' ');
+  if (!P) return;
+  const pats = [/(\d{3})(?=입원)/g, /간편\s?(\d{2,3})/g];
+  let n = 0;
+  pats.forEach(re => {
+    const want = new Set(); let m; const r1 = new RegExp(re.source, 'g');
+    while ((m = r1.exec(P))) want.add(m[1]);
+    if (!want.size) return;
+    rules.forEach(r => ['memo', 'title'].forEach(f => {
+      if (!r[f]) return;
+      const r2 = new RegExp(re.source, 'g');
+      r[f] = String(r[f]).replace(r2, (all, d) => {
+        if (want.has(d)) return all;
+        const cand = [...want].filter(w => w.length === d.length && [...w].filter((c, i) => c !== d[i]).length === 1);
+        if (cand.length !== 1) return all;
+        n++; return all.replace(d, cand[0]);
+      });
+    }));
+  });
+  if (n) warnings.push(`${company}: 설명 문장 속 상품명 숫자 ${n}곳을 공지 각주의 숫자에 맞춰 바로잡았습니다.`);
 }
 
 // ── 판매건수 누계처럼 계산 대상이 아닌 시상은 안내로 두고, 빨간 "확인 필요" 표시는 달지 않습니다 ──
@@ -702,6 +726,7 @@ function crossCheck(outA, outB, tr, srcText) {
       if (ba.batch.grp === 'nonlife') calmKnownNotes(ba.rules);
       if (ba.batch.grp === 'nonlife') applyInsuranceScope(ba.rules, ba.batch.company, warnings);
       if (ba.batch.grp === 'nonlife') { fixSilsonYubyeong(ba.rules, tt + ' ' + String(srcText || ''), ba.batch.company, warnings); splitDriverCap(ba.rules, tt + ' ' + String(srcText || ''), ba.batch.company, warnings); }
+      if (tr && ba.batch.grp === 'nonlife') fixProductDigits(ba.rules, tr.products, ba.batch.company, warnings);
       if (tr && ba.batch.grp === 'nonlife') reconcileProducts(ba.rules, tr.products, ba.batch.company, warnings);
     }
     if (tr) {
