@@ -433,7 +433,16 @@ function applyPayTiming(rules, text, company, warnings) {
   const t = String(text || '').replace(/\s+/g, ' ');
   const money = r => r.itype !== 'note' && r.itype !== 'goods' && r.itype !== 'tier';
   // "N% … 익익월" 처럼 % 바로 뒤(같은 괄호 안, 다른 %·익월 표기가 끼지 않는 범위)에 익익월이 올 때만 그 %에 묶습니다
-  const bind = str => { const set = new Set(); const re = /(\d+(?:\.\d+)?)\s*%(?:(?!(?<!익)익월)[^%)/]){0,30}?익익월/g; let x; while ((x = re.exec(String(str || '').replace(/\s+/g, ' ')))) set.add(parseFloat(x[1])); return set; };
+  const bind = str => {
+    const set = new Set(); const src = String(str || '').replace(/\s+/g, ' '); let x;
+    // % 뒤에 익익월이 오는 경우 — "+"·"&" 로 이어 붙인 다른 항목(예: "200% + 익익월 엠금융 250%")은 건너뛰지 않습니다
+    const re = /(\d+(?:\.\d+)?)\s*%(?:(?!(?<!익)익월)[^%)/+&]){0,30}?익익월/g;
+    while ((x = re.exec(src))) set.add(parseFloat(x[1]));
+    // 항목 맨 앞의 "익익월 엠금융 선지원 250%" — 지급 시기가 % 앞에 적힌 경우
+    const re2 = /(?:^|[+&,/·]\s*)익익월\s*[^%+&)/\d]{0,20}?(\d+(?:\.\d+)?)\s*%/g;
+    while ((x = re2.exec(src))) set.add(parseFloat(x[1]));
+    return set;
+  };
   const pcts = bind(t);
   const fixed = [];
   const setTo2 = r => { r.pay_offset = 2; r.memo = norm(((r.memo ? r.memo + ' · ' : '') + '지급 시기: 익익월 (공지 구역 제목 표기)').slice(0, 500)); fixed.push(r.title); };
