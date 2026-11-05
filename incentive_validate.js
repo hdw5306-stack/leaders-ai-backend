@@ -38,7 +38,7 @@ function monthRange(period, today) {
 }
 
 const STD_CATS = ['상해(운전자)', '건강(의료)', '어린이', '유병자', '연금·저축', '화재·재물', '펫', '치아', '간병', '실손', '단체', '단체(1년)'];
-const TAG_ALIAS = { '재물&단체': '화재·재물', '재물·단체': '화재·재물', '재물 & 단체': '화재·재물', '단독실손': '실손', '실손보험': '실손', '단체보험': '단체', '1년단체': '단체(1년)', '1년 단체': '단체(1년)', '단체 1년': '단체(1년)', '단체(1년만기)': '단체(1년)', '단체 1년만기': '단체(1년)' };
+const TAG_ALIAS = { '재물&단체': '화재·재물,단체', '재물·단체': '화재·재물,단체', '재물 & 단체': '화재·재물,단체', '재물/단체': '화재·재물,단체', '재물,단체': '화재·재물,단체', '단독실손': '실손', '실손보험': '실손', '단체보험': '단체', '1년단체': '단체(1년)', '1년 단체': '단체(1년)', '단체 1년': '단체(1년)', '단체(1년만기)': '단체(1년)', '단체 1년만기': '단체(1년)' };
 const CAT_WORDS = [['펫', ['펫', '반려']], ['화재·재물', ['화재', '재물']], ['실손', ['실손']], ['단체', ['단체']], ['상해(운전자)', ['운전자', '상해']], ['치아', ['치아']], ['간병', ['간병', '치매']], ['연금·저축', ['연금', '저축']], ['어린이', ['어린이']], ['유병자', ['유병자', '간편']], ['건강(의료)', ['건강', '의료', '실손']]];
 function normTag(t) {
   t = String(t || '').replace(/\s+/g, ' ').trim();
@@ -568,6 +568,20 @@ function fixMixedTags(rules) {
 }
 
 
+// ── 본사 기준상 이미 정리된 사항에 대해 AI가 붙인 "확인 필요"는 빨간 표시 대신 조용한 메모로 바꿉니다 ──
+function calmKnownNotes(rules) {
+  rules.forEach(r => {
+    if (!r.review_note || r.itype === 'note') return;
+    const rn = String(r.review_note);
+    if (/두 번 읽은 결과가 다릅니다|두 번째 읽기에서는 이 항목이 나오지 않았|공지 숫자|원문 기준|짝을 찾지/.test(rn)) return;   // 교차검증이 붙인 경고는 건드리지 않음
+    let memo = '';
+    if (/상해\s*[·\/,]?\s*운전자[^.]{0,30}(하나의 상품군|함께 포함|묶여)|상해보험과 운전자보험이 함께|상해보험도 별도 운전자 규칙/.test(rn) && !/[0-9]+\s*만\s*원[^.]{0,10}(한도|초과)/.test(rn.replace(/운전자보험만 건당 인정 한도 10만원이 적용되도록 확인 필요/, ''))) memo = '상해(운전자)는 한 상품군으로 취급합니다(일반 상해보험과 운전자보험을 구분하지 않음)';
+    else if (r.itype === 'tier' && /운전자[^.]{0,40}(한도|별도)/.test(rn)) memo = '운전자 계약은 건당 인정 한도가 달라 구간 합산에는 자동 반영되지 않습니다(공통 안내 참조)';
+    else if (/지급\s*예시[^.]{0,40}2028|실제 지급월 확인/.test(rn)) memo = '13회차 유지 확정 후 지급(공통기준 예시: 2026년 11월 계약 → 2028년 1월 지급)';
+    if (memo) { r.review_note = ''; r.memo = norm(((r.memo ? r.memo + ' · ' : '') + memo).slice(0, 500)); }
+  });
+}
+
 // ── 판매건수 누계처럼 계산 대상이 아닌 시상은 안내로 두고, 빨간 "확인 필요" 표시는 달지 않습니다 ──
 function calmCountNotes(rules) {
   rules.forEach(r => {
@@ -680,6 +694,7 @@ function crossCheck(outA, outB, tr, srcText) {
       applyGradeOnly(ba.rules, tr && tr.grades, ba.batch.company, warnings);
       calmCountNotes(ba.rules);
       if (ba.batch.grp === 'nonlife') fixMixedTags(ba.rules);
+      if (ba.batch.grp === 'nonlife') calmKnownNotes(ba.rules);
       if (ba.batch.grp === 'nonlife') applyInsuranceScope(ba.rules, ba.batch.company, warnings);
       if (ba.batch.grp === 'nonlife') { fixSilsonYubyeong(ba.rules, tt + ' ' + String(srcText || ''), ba.batch.company, warnings); splitDriverCap(ba.rules, tt + ' ' + String(srcText || ''), ba.batch.company, warnings); }
       if (tr && ba.batch.grp === 'nonlife') reconcileProducts(ba.rules, tr.products, ba.batch.company, warnings);
