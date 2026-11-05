@@ -18,6 +18,11 @@ function pairsFromText(t) {
 function capsFromText(t) {
   const set = new Set(), re = /건당\s*P?\s*(?:최대\s*)?(\d+(?:[.,]\d+)?)\s*만\s*원?\s*(?:초과|이상)?[^.\n]{0,12}?(?:한도|限|인정|까지)/g;
   let x; while ((x = re.exec(String(t || '')))) set.add(Math.round(parseFloat(x[1].replace(/,/g, '')) * 10000));
+  // "월납P 25만원 이상건은 25만원으로 인정", "월납p 10만 이상건은 10만원까지만 인정", "월납p 최대 100만원까지 인정" 같은 표기도 한도로 봅니다
+  const re2 = /(\d+(?:[.,]\d+)?)\s*만\s*원?\s*이상\s*건?은?\s*(\d+(?:[.,]\d+)?)\s*만\s*원?\s*(?:으로|까지)/g;
+  while ((x = re2.exec(String(t || '')))) set.add(Math.round(parseFloat(x[2].replace(/,/g, '')) * 10000));
+  const re3 = /(?:월납\s*[pP]?|보험료)\s*최대\s*(\d+(?:[.,]\d+)?)\s*만\s*원?\s*까지/g;
+  while ((x = re3.exec(String(t || '')))) set.add(Math.round(parseFloat(x[1].replace(/,/g, '')) * 10000));
   return set;
 }
 function addNote(r, msg) {
@@ -350,7 +355,8 @@ function diffText(a, b, support) {
       const ta = (a.not_tags || []), tb = (b.not_tags || []);
       const tagTok = String(a.tag || '').split(/[,+]/).map(x => x.trim()).filter(Boolean);
       if (tagTok.length && [...ta, ...tb].every(t => !tagTok.includes(t) && !(t === '단체' && tagTok.includes('단체(1년)')))) continue;   // 상품군을 이미 좁게 지정했으면 다른 상품군 제외는 의미 없음
-      if (tb.every(t => ta.includes(t)) && ta.filter(t => !tb.includes(t)).every(t => sup.includes(String(t).replace(/보험$/, '')))) continue;
+      const baseOk = t => (['실손', '연금·저축', '펫', '화재·재물', '단체(1년)', '단체'].includes(t) && /인보험|장기|보장성/.test(sup)) || (t === '상해(운전자)' && /운전자/.test(sup));
+      if (tb.every(t => ta.includes(t)) && ta.filter(t => !tb.includes(t)).every(t => sup.includes(String(t).replace(/보험$/, '')) || baseOk(t))) continue;
     }
     if (k === '단위' && a.itype === 'tier' && b.itype === 'tier') continue;   // 구간표는 단위(정액/비율)가 의미 없음
     if (k === '제외' && (b.not_tags || []).length && !(a.not_tags || []).length) {   // 두 번째 읽기가 공지에 없는 제외 상품군을 붙인 경우는 문제 삼지 않음
@@ -358,6 +364,11 @@ function diffText(a, b, support) {
     }
     if (k === '구간' && ((a.tiers || []).some(t => t.prev) || (b.tiers || []).some(t => t.prev)) && (a.tiers || []).map(t => t.pay).join() === (b.tiers || []).map(t => t.pay).join()) continue;   // 연속가동은 앞 기간 조건 표기만 다르고 지급액이 같으면 같은 것으로 봄
     if (k === '지급시기' && offsetOk(a)) continue;
+    if (k === '상품군') {
+      const tk = x => String(x || '').split(/[,+]/).map(z => z.trim()).filter(Boolean);
+      const ta2 = tk(a.tag), tb2 = tk(b.tag);
+      if (tb2.length && tb2.every(t => ta2.includes(t)) && ta2.length > tb2.length) continue;   // 첫 번째 읽기가 추가 조건(납입기간·플랜 등)을 더 적은 경우
+    }
     if (k === '상품군' && /펫|반려/.test(`${a.title || ''} ${a.src_text || ''}`) && /펫/.test(String(sa[k]))) continue;   // 반려견·반려묘 시상의 펫 조건은 공지 문구가 뒷받침
     if (k === '구간') {
       const f = x => (x.tiers || []).map(t => `${t.prev ? '전기간 ' + won(t.prev) + '+' : ''}${won(t.min)}↑ ${won(t.pay)}`).join(', ');
@@ -602,6 +613,12 @@ function crossCheck(outA, outB, tr, srcText) {
     // 같은 종류라도 이름·값·상품군·구간이 하나도 닮지 않았으면 같은 시책으로 보지 않습니다
     // 월 시책끼리 지급률(%)이 다른데 이름도 거의 같지 않으면 서로 다른 시책입니다(예: 인보험 150% ↔ 단체 100%)
     if (best && a.itype !== 'tier' && best.itype !== 'tier' && a.value && best.value && a.value !== best.value && simil(a.title, best.title) < 0.8) return null;
+    // 상품군이 서로 전혀 다른 표준 상품군(예: 운전자 ↔ 연금)이면 지급률이 같아도 다른 시책입니다
+    if (best && a.tag && best.tag && simil(a.title, best.title) < 0.8) {
+      const tk = x => String(x).split(/[,+]/).map(z => z.trim()).filter(z => STD_CATS.includes(z));
+      const A = tk(a.tag), B = tk(best.tag);
+      if (A.length && B.length && !A.some(t => B.includes(t))) return null;
+    }
     if (best) {
       const tierHit = (a.tiers || []).some(t => (best.tiers || []).some(u => u.min === t.min));
       const like = simil(a.title, best.title) >= 0.35 || (a.value && a.value === best.value) || (a.tag && a.tag === best.tag) || tierHit;
