@@ -656,7 +656,7 @@ function crossCheck(outA, outB, tr, srcText) {
       } else {
         if (au.msgs.length && a.itype === 'tier' && bestB && bestB.itype === 'tier' && Array.isArray(bestB.tiers) && !bAudit.msgs.length && (bAudit.specific || !tr)) {
           a.tiers = bestB.tiers.map(t => Object.assign({}, t)); au.msgs.length = 0; msgs.length = 0;
-          warnings.push(`${ba.batch.company}: ‘${a.title}’의 구간 금액이 공지 숫자와 달라, 공지와 일치하는 두 번째 읽기 결과로 바로잡았습니다(공지 원문과 일치).`);
+          if (!warnings.some(w => w.includes(a.title) && /원문 기준으로 정정/.test(w))) warnings.push(`${ba.batch.company}: ‘${a.title}’의 구간 금액이 공지 숫자와 달라, 공지와 일치하는 두 번째 읽기 결과로 바로잡았습니다(공지 원문과 일치).`);
         } else if (au.msgs.length && a.itype === 'tier' && bestB && bestB.itype === 'tier' && (a.tiers || []).length && ruleSig(a).구간 === ruleSig(bestB).구간 && bAudit.msgs.length) {
           au.msgs.length = 0;   // 두 번 읽은 결과가 구간표 숫자까지 똑같고 옮겨 적기만 다르면, 옮겨 적기가 그 표의 칸을 빠뜨렸거나 다른 표와 섞인 것으로 봅니다
         } else if (tr && !au.msgs.length && bestB && bAudit.msgs.length) {
