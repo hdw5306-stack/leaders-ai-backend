@@ -203,7 +203,7 @@ function validate(raw, ctx) {
             if (pr.size >= 2) {
               let fixedN = 0;
               tiers.forEach(t => { if (!t.prev && pr.has(t.min) && pr.get(t.min) !== t.pay) { t.pay = pr.get(t.min); fixedN++; } });
-              if (fixedN) { addNote(r, `AI가 읽은 금액 ${fixedN}건이 공지 원문과 달라 원문 기준으로 바로잡았습니다 — 확인 필요`); warnings.push(`${batch.company} · ${r.title}: 금액 ${fixedN}건을 원문 기준으로 정정`); }
+              if (fixedN) { r.memo = norm(((r.memo ? r.memo + ' · ' : '') + `금액 ${fixedN}건을 공지 원문 숫자에 맞춰 바로잡음`).slice(0, 500)); warnings.push(`${batch.company} · ${r.title}: 금액 ${fixedN}건을 원문 기준으로 정정`); }
             }
           }
           if (tiers.some(t => t.min < 1000 || t.pay < 1000)) addNote(r, '구간 금액이 1,000원 미만입니다 — 단위(만원/원) 확인 필요');
@@ -348,6 +348,8 @@ function diffText(a, b, support) {
     // 제외 상품군: 두 번째 읽기가 첫 번째의 일부이고, 더 많은 쪽의 나머지가 공지 문구에 적혀 있으면 문제 삼지 않음
     if (k === '제외') {
       const ta = (a.not_tags || []), tb = (b.not_tags || []);
+      const tagTok = String(a.tag || '').split(/[,+]/).map(x => x.trim()).filter(Boolean);
+      if (tagTok.length && [...ta, ...tb].every(t => !tagTok.includes(t) && !(t === '단체' && tagTok.includes('단체(1년)')))) continue;   // 상품군을 이미 좁게 지정했으면 다른 상품군 제외는 의미 없음
       if (tb.every(t => ta.includes(t)) && ta.filter(t => !tb.includes(t)).every(t => sup.includes(String(t).replace(/보험$/, '')))) continue;
     }
     if (k === '지급시기' && offsetOk(a)) continue;
