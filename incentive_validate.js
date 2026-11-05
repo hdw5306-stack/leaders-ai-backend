@@ -14,6 +14,17 @@ function pairsFromText(t) {
   while ((x = re.exec(String(t || '')))) m.set(n(x[1]), n(x[2]));
   return m;
 }
+// 표의 칸 구분이 사라져 숫자만 한 줄로 옮겨진 경우 — "구간 n개 뒤에 금액 n개"(위·아래 두 줄 표) 또는 "구간 금액 구간 금액…"(한 줄 표) 순서가
+// 구간표와 그대로 일치하는지 봅니다. 값이 겹쳐도(20만이 구간이자 금액) 순서로 판단하므로 짝 사전보다 정확합니다.
+function sequenceConfirms(tiers, text) {
+  const own = (tiers || []).filter(t => !t.prev); const n = own.length; if (n < 2) return false;
+  const nums = []; String(text || '').replace(/(\d+(?:[.,]\d+)?)\s*만(?!\s*원?\s*(?:↑|이상))?/g, (m, x) => { nums.push(Math.round(parseFloat(x.replace(/,/g, '')) * 10000)); });
+  for (let st = 0; st < nums.length; st++) {
+    if (st + 2 * n <= nums.length && own.every((t, i) => nums[st + i] === t.min && nums[st + n + i] === t.pay)) return true;
+    if (st + 2 * n <= nums.length && own.every((t, i) => nums[st + 2 * i] === t.min && nums[st + 2 * i + 1] === t.pay)) return true;
+  }
+  return false;
+}
 // 공통기준에 적힌 "건당 20만원 한도" 같은 인정 한도(원)를 모읍니다.
 function capsFromText(t) {
   const set = new Set(), re = /건당\s*P?\s*(?:최대\s*)?(\d+(?:[.,]\d+)?)\s*만\s*원?\s*(?:초과|이상)?[^.\n]{0,12}?(?:한도|限|인정|까지)/g;
@@ -412,7 +423,8 @@ function auditAgainstTranscript(r, tr) {
     const spec = tableSpecific(r, pairs);
     const useSet = spec ? new Set(spec.map(p => `${p.h}:${p.v}`)) : pairSet;
     res.specific = !!spec;
-    const bad = r.tiers.filter(t => !t.prev && !useSet.has(`${t.min}:${t.pay}`));
+    let bad = r.tiers.filter(t => !t.prev && !useSet.has(`${t.min}:${t.pay}`));
+    if (bad.length && (sequenceConfirms(r.tiers, tr.text) || sequenceConfirms(r.tiers, (tr.pairs || []).map(p => `${p.h == null ? '' : p.h} ${p.value == null ? '' : p.value}`).join(' ')))) bad = [];
     // 합쳐진 칸이 있는 표는 옮겨 적기가 일부 칸을 빠뜨릴 수 있습니다. 일부 칸은 확인되고 나머지는 시책이 인용한 공지 문구(src_text)에 그대로 적혀 있으면 문제 삼지 않습니다.
     const prevTiers = r.tiers.filter(t => t.prev);
     const okCnt = prevTiers.filter(t => valSet.has(t.pay)).length;
@@ -867,6 +879,7 @@ function crossCheck(outA, outB, tr, srcText) {
         const pr = pairsFromText(a.src_text);
         const own = (a.tiers || []).filter(t => !t.prev);
         if (pr.size >= 2 && own.length && own.every(t => pr.get(t.min) === t.pay)) au.msgs.length = 0;
+        else if (sequenceConfirms(a.tiers, a.src_text)) au.msgs.length = 0;
       }
       const bAudit = bestB ? auditAgainstTranscript(bestB, tr) : { msgs: ['-'], specific: false };
       if (au.specific && !au.msgs.length) {
