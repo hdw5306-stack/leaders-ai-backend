@@ -509,7 +509,7 @@ function fixMixedTags(rules) {
     const out = [];
     groups.forEach(g => {
       const toks = g.split(',').map(x => x.trim()).filter(Boolean);
-      if (toks.length === 1 && !STD_CATS.includes(toks[0]) && toks[0].includes('·')) {
+      if (toks.length === 1 && !STD_CATS.includes(toks[0]) && toks[0].includes('·') && !/플랜|생상종|생활상해/.test(toks[0])) {
         // "단체보험·보장P 15% 이상" → "단체" + "보장P 15% 이상"
         const ps = toks[0].split('·').map(x => normTag(x)).filter(Boolean);
         ps.forEach(x => out.push(x));
@@ -519,6 +519,8 @@ function fixMixedTags(rules) {
     // 단체 전용 시책(제목이 단체로 시작)이면 화재·재물 조건을 빼고, 반대로 재물 전용이면 단체를 뺍니다
     if (/^\s*단체/.test(r.title || '') && !/재물/.test(r.title || '')) res = res.filter(x => x !== '화재·재물');
     if (/^\s*재물/.test(r.title || '') && !/단체/.test(r.title || '')) res = res.filter(x => x !== '단체');
+    // 운전자·생활상해 단체플랜 시책: 단체보험이 대상이므로 '상해(운전자)'를 함께 요구하면 아무 계약도 맞지 않게 됩니다
+    if (res.includes('단체') && res.includes('상해(운전자)') && /플랜|생상종|생활상해/.test(`${r.title || ''} ${r.tag || ''} ${r.src_text || ''}`)) res = res.filter(x => x !== '상해(운전자)');
     const next = Array.from(new Set(res)).join('+');
     if (next && next !== r.tag) { r.memo = norm(((r.memo ? r.memo + ' · ' : '') + `상품군 조건을 ‘${next}’로 정리`).slice(0, 500)); r.tag = next; }
   });
