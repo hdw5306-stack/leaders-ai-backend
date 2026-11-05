@@ -575,7 +575,7 @@ function calmKnownNotes(rules) {
     const rn = String(r.review_note);
     if (/두 번 읽은 결과가 다릅니다|두 번째 읽기에서는 이 항목이 나오지 않았|공지 숫자|원문 기준|짝을 찾지/.test(rn)) return;   // 교차검증이 붙인 경고는 건드리지 않음
     let memo = '';
-    if (/상해\s*[·\/,]?\s*운전자[^.]{0,30}(하나의 상품군|함께 포함|묶여)|상해보험과 운전자보험이 함께|상해보험도 별도 운전자 규칙/.test(rn) && !/[0-9]+\s*만\s*원[^.]{0,10}(한도|초과)/.test(rn.replace(/운전자보험만 건당 인정 한도 10만원이 적용되도록 확인 필요/, ''))) memo = '상해(운전자)는 한 상품군으로 취급합니다(일반 상해보험과 운전자보험을 구분하지 않음)';
+    if (/상해\s*[·\/,]?\s*운전자[^.]{0,30}(하나의 상품군|함께 포함|묶여)|상해보험과 운전자보험이 함께|상해보험도 별도 운전자 규칙|일반\s*상해[^.]{0,60}(통합|같은 상품군|구분|적용)/.test(rn) && !/[0-9]+\s*만\s*원[^.]{0,10}(한도|초과)/.test(rn.replace(/운전자보험만 건당 인정 한도 10만원이 적용되도록 확인 필요/, ''))) memo = '상해(운전자)는 한 상품군으로 취급합니다(일반 상해보험과 운전자보험을 구분하지 않음)';
     else if (r.itype === 'tier' && /운전자[^.]{0,40}(한도|별도)/.test(rn)) memo = '운전자 계약은 건당 인정 한도가 달라 구간 합산에는 자동 반영되지 않습니다(공통 안내 참조)';
     else if (/지급\s*예시[^.]{0,40}2028|실제 지급월 확인/.test(rn)) memo = '13회차 유지 확정 후 지급(공통기준 예시: 2026년 11월 계약 → 2028년 1월 지급)';
     if (memo) { r.review_note = ''; r.memo = norm(((r.memo ? r.memo + ' · ' : '') + memo).slice(0, 500)); }
@@ -623,13 +623,17 @@ function reconcileProducts(rules, trProducts, company, warnings) {
   if (P.length < 2) return;
   const sq = v => squash(v);
   const inP = k => P.some(p => sq(p).includes(sq(k)) || sq(k).includes(sq(p)));
-  let fixedN = 0; const badSet = new Set(), fixSet = new Set();
+  let fixedN = 0; const badSet = new Set(), fixSet = new Set(), diffSet = new Set();
   rules.forEach(r => {
     if (!Array.isArray(r.prod_kw) || !r.prod_kw.length) return;
     const hadSlash = r.prod_kw.some(k => /\//.test(k));
     const kws = r.prod_kw.flatMap(k => String(k).split('/').map(z => norm(z)).filter(z => z.length >= 2));
     if (hadSlash) { r.prod_kw = Array.from(new Set(kws)); if (/상품명.*(생략|불명확|슬래시)|슬래시/.test(r.review_note || '')) r.review_note = ''; }
-    const miss = kws.filter(k => !inP(k));
+    // 시책 설명(memo·원문 발췌)에도 같은 글자로 적혀 있으면, 옮겨 적기 쪽이 글자를 잘못 읽었을 수 있으므로 바꾸지 않고 확인만 요청합니다
+    const own = sq([r.memo, r.src_text, r.title].join(' '));
+    const selfOk = new Set(kws.filter(k => !inP(k) && sq(k).length >= 5 && own.includes(sq(k))));
+    selfOk.forEach(k => diffSet.add(k));
+    const miss = kws.filter(k => !inP(k) && !selfOk.has(k));
     if (!miss.length) return;
     // 목록 안에서 어느 상품이 이 시책 소속인지 알려면 시책 상품이 목록 전체와 같은 개수여야 가장 믿을 만함
     const usedP = new Set(P.filter(p => kws.some(k => sq(p).includes(sq(k)) || sq(k).includes(sq(p)))));
@@ -637,11 +641,11 @@ function reconcileProducts(rules, trProducts, company, warnings) {
     const out = kws.slice();
     if (kws.length === P.length) {
       // 같은 개수·같은 순서이면 순서대로 짝지어 읽기 오류만 교체
-      kws.forEach((k, i) => { if (!inP(k)) { out[i] = P[i]; fixedN++; fixSet.add(k + ' → ' + P[i]); } });
+      kws.forEach((k, i) => { if (!inP(k) && !selfOk.has(k)) { out[i] = P[i]; fixedN++; fixSet.add(k + ' → ' + P[i]); } });
     } else {
       const pool = freeP.slice();
       kws.forEach((k, i) => {
-        if (inP(k)) return;
+        if (inP(k) || selfOk.has(k)) return;
         let best = -1, bs = 0.45; pool.forEach((p, j) => { const sc = simil(k, p); if (sc > bs) { bs = sc; best = j; } });
         if (best >= 0) { out[i] = pool[best]; pool.splice(best, 1); fixedN++; fixSet.add(k + ' → ' + out[i]); } else badSet.add(k);
       });
@@ -650,6 +654,7 @@ function reconcileProducts(rules, trProducts, company, warnings) {
     if (miss.length && out.some((k, i) => k !== kws[i])) r.memo = norm(((r.memo ? r.memo + ' · ' : '') + '상품명은 공지 각주 글자와 맞춰 바로잡음').slice(0, 500));
   });
   if (fixSet.size) warnings.push(`${company}: 읽는 도중 달라진 상품명 ${fixSet.size}개를 공지 각주의 글자에 맞춰 바로잡았습니다(${Array.from(fixSet).slice(0, 5).join(', ')}). 주력상품 목록을 원문과 한 번 더 대조하세요.`);
+  if (diffSet.size) warnings.push(`${company}: 시책의 상품명 ${diffSet.size}개가 공지 각주 옮겨 적기와 글자가 다릅니다(${Array.from(diffSet).slice(0, 5).join(', ')}) — 옮겨 적기가 잘못 읽었을 수 있어 바꾸지 않았습니다. 공지 원문과 대조하세요.`);
   if (badSet.size) warnings.push(`${company}: 공지 각주와 맞지 않는 상품명 ${badSet.size}개가 남아 있습니다(${Array.from(badSet).slice(0, 8).join(', ')}) — 주력상품 목록을 원문과 직접 대조하세요.`);
 }
 

@@ -30,6 +30,7 @@ const PROFILES = {
     driver: { cap: 100000, titleRe: /정규\s*시상\s*인보험|선지급/ },
     ensureNot: { titleRe: /인보험|선지급/, tags: ['실손', '연금·저축', '화재·재물', '단체', '단체(1년)', '펫'] },
     pay: [{ re: /선지급/, offset: 2 }],
+    warn: '메리츠: 상해(운전자)는 한 상품군이라 운전자 건당 한도 10만원이 일반 상해보험에도 같이 적용됩니다(일반 상해는 원래 30만원).',
   },
   'DB손보': {
     note: '일반 건당 30만원 한도(운전자 등 10만원·치아사랑 7만원은 안내), 인보험 250%는 엠금융 익익월',
@@ -97,6 +98,7 @@ function applyProfiles(batches, warnings) {
       });
       if (add.length) ba.rules.push(...add);
     }
+    if (p.warn) warnings.push(p.warn);
     const parts = [];
     if (done.pay) parts.push(`지급 시기 ${done.pay}건`);
     if (done.strip) parts.push(`제외 상품군 정정 ${done.strip}건`);
