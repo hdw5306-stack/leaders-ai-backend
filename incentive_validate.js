@@ -455,6 +455,47 @@ function applyPayTiming(rules, text, company, warnings) {
   if (fixed.length) warnings.push(`${company}: 공지에 ‘익익월 지급’으로 적힌 시책 ${fixed.length}건의 지급 시기를 익익월(2개월 뒤)로 맞췄습니다 — ${fixed.slice(0, 3).join(', ')}`);
 }
 
+// ── "실손(실손, 실손전환, 유병자 등)"처럼 실손의 한 종류로 적힌 유병자는 '유병자 상품군 제외'가 아닙니다 ──
+function fixSilsonYubyeong(rules, text, company, warnings) {
+  const t = String(text || '');
+  if (!/실손[^)\n]{0,25}유병자/.test(t)) return;
+  if (/유병자/.test(t.replace(/실손[^)\n]{0,25}유병자/g, ''))) return;   // 다른 곳에도 유병자가 나오면 건드리지 않음
+  let n = 0;
+  rules.forEach(r => {
+    if (!Array.isArray(r.not_tags) || !r.not_tags.includes('유병자')) return;
+    r.not_tags = r.not_tags.filter(x => x !== '유병자'); n++;
+    r.memo = norm(((r.memo ? r.memo + ' · ' : '') + '공지의 "실손(…유병자 등)"은 유병자 실손을 뜻하므로 유병자 상품군은 제외하지 않음').slice(0, 500));
+  });
+  if (n) warnings.push(`${company}: 공지의 "실손(실손·실손전환·유병자 등)"은 유병자 실손을 뜻하므로, 시책 ${n}건에서 유병자 상품군 제외를 풀었습니다.`);
+}
+
+// ── 운전자보험은 건당 인정 한도가 다르다고 안내된 시책을 '운전자'와 '그 외'로 나눕니다 ──
+function splitDriverCap(rules, text, company, warnings) {
+  const t = String(text || '');
+  const add = [];
+  rules.forEach(r => {
+    if (r.itype !== 'monthly' && r.itype !== 'month13') return;
+    if (!r.cap_premium || r.tag) return;
+    if (Array.isArray(r.not_tags) && r.not_tags.includes('상해(운전자)')) return;
+    const own = `${r.memo || ''} ${r.review_note || ''}`;
+    if (!/운전자/.test(own)) return;
+    const hay = own + ' ' + t;
+    const m = /운전자[^.\n]{0,40}?(\d+(?:\.\d+)?)\s*만\s*원?\s*(?:까지|한도|이상\s*건은\s*\d+\s*만\s*원)/.exec(hay) || /운전자[^.\n]{0,40}?한도[^.\n]{0,10}?(\d+(?:\.\d+)?)\s*만\s*원/.exec(hay);
+    if (!m) return;
+    const cap = Math.round(parseFloat(m[1]) * 10000);
+    if (!cap || cap >= r.cap_premium) return;
+    if (rules.some(x => x !== r && x.tag === '상해(운전자)' && x.itype === r.itype && Number(x.value) === Number(r.value) && (x.pay_offset || 0) === (r.pay_offset || 0))) return;
+    const c = JSON.parse(JSON.stringify(r));
+    c.title = norm(String(r.title).replace(/\s*[—-]\s*운전자\s*외\s*$/, '') + ' — 운전자'); c.tag = '상해(운전자)'; c.cap_premium = cap; c.not_tags = [];
+    c.review_note = ''; c.memo = norm(`운전자보험은 건당 인정 한도 ${cap / 10000}만원으로 따로 적용`);
+    r.not_tags = (Array.isArray(r.not_tags) ? r.not_tags : []).concat('상해(운전자)');
+    r.title = norm(String(r.title).replace(/\s*[—-]\s*운전자\s*외\s*$/, '') + ' — 운전자 외');
+    r.review_note = /운전자.*(분리|별도)/.test(r.review_note || '') ? '' : r.review_note;
+    add.push(c);
+  });
+  if (add.length) { rules.push(...add); warnings.push(`${company}: 운전자보험은 건당 인정 한도가 달라 시책 ${add.length}건을 ‘운전자’와 ‘그 외’로 나누었습니다.`); }
+}
+
 // ── "장기인보험/인보험" 시책의 상품 범위(본사 확정 기준) ──
 // 장기인보험 = 상해(운전자)·건강(의료)·어린이·유병자·치아·간병 + 3년 이상 단체보험.
 // 실손(단독)·연금·저축·펫·화재·재물·1년 만기 단체보험은 장기인보험이 아니므로, 공지가 "포함"이라고 명시하지 않았다면 제외합니다.
@@ -640,6 +681,7 @@ function crossCheck(outA, outB, tr, srcText) {
       calmCountNotes(ba.rules);
       if (ba.batch.grp === 'nonlife') fixMixedTags(ba.rules);
       if (ba.batch.grp === 'nonlife') applyInsuranceScope(ba.rules, ba.batch.company, warnings);
+      if (ba.batch.grp === 'nonlife') { fixSilsonYubyeong(ba.rules, tt + ' ' + String(srcText || ''), ba.batch.company, warnings); splitDriverCap(ba.rules, tt + ' ' + String(srcText || ''), ba.batch.company, warnings); }
       if (tr && ba.batch.grp === 'nonlife') reconcileProducts(ba.rules, tr.products, ba.batch.company, warnings);
     }
     if (tr) {

@@ -20,6 +20,7 @@ const multer = require('multer');
 const { toInput } = require('./incentive_files');
 const { SYSTEM_PROMPT, userPrompt, IDENTIFY_PROMPT, TRANSCRIBE_PROMPT } = require('./incentive_prompt');
 const { validate, crossCheck } = require('./incentive_validate');
+const { applyProfiles } = require('./incentive_profiles');
 
 const router = express.Router();
 const upload = multer({ limits: { fileSize: 15 * 1024 * 1024 } });
@@ -170,12 +171,34 @@ async function runExtract(file, products, nonlife, force) {
   let vB = null, tr = null;
   if (rB2.status === 'fulfilled') { try { vB = validate(rB2.value.json, ctx); } catch (e) { warnings.push('두 번째 읽기 결과를 처리하지 못했습니다: ' + e.message); } } else warnings.push('두 번째 읽기에 실패했습니다: ' + String(rB2.reason && rB2.reason.message || rB2.reason).slice(0, 120));
   if (rT2.status === 'fulfilled') tr = rT2.value.json; else warnings.push('공지 숫자 옮겨 적기에 실패했습니다: ' + String(rT2.reason && rT2.reason.message || rT2.reason).slice(0, 120));
+  const vClone = vB ? JSON.parse(JSON.stringify(v)) : null;   // 세 번째 읽기 비교용(교차검증은 결과를 직접 고치므로 미리 복사)
   const cc = crossCheck(v.batches, vB ? vB.batches : null, tr, input.text || '');
   cc.warnings.forEach(w => warnings.push(w));
+  // ── 두 번 읽은 결과가 갈리는 항목이 있으면 세 번째로 읽어, 둘 이상이 같게 읽은 쪽을 따릅니다(다수결) ──
+  let thirdUsage = null, resolved = 0;
+  const isFlag = r => !!r.review_note && /두 번 읽은 결과가 다릅니다|두 번째 읽기에서는 이 항목이 나오지 않았/.test(r.review_note);
+  if (vB && cc.flagged > 0) {
+    try {
+      const rC = await callAI({ system: SYSTEM_PROMPT, content: mk(VERIFY + ' (세 번째 읽기)'), maxOutput: 16000, rotate: 0 });
+      thirdUsage = rC.usage;
+      const vC = validate(rC.json ? rC.json : rC.value && rC.value.json, ctx);
+      crossCheck(vClone.batches, vC.batches, tr, input.text || '');
+      v.batches.forEach((b, bi) => {
+        const b2 = vClone.batches[bi]; if (!b2 || b2.rules.length !== b.rules.length) return;
+        b.rules.forEach((r, ri) => {
+          const r2 = b2.rules[ri];
+          if (isFlag(r) && r2 && r2.title === r.title && !isFlag(r2)) { b.rules[ri] = r2; resolved++; }
+        });
+      });
+      if (resolved) { cc.flagged -= resolved; cc.agreed += resolved; cc.summary = `교차검증(세 번 읽기 다수결 + 공지 숫자 대조): 계산 대상 ${cc.total}건 중 ${cc.agreed}건 일치, ${cc.flagged}건 확인 필요`; warnings.push(`두 번 읽은 결과가 갈린 ${resolved}건은 세 번째 읽기에서 첫 번째 읽기와 같게 나와 그쪽을 따랐습니다.`); }
+    } catch (e) { warnings.push('세 번째 읽기를 하지 못했습니다: ' + String(e && e.message || e).slice(0, 100)); }
+  }
+  applyProfiles(v.batches, warnings);   // 보험사별 고정 기준표 적용(한도·제외 상품군·지급 시기)
   v.batches.forEach(b => { b.batch.notes = (b.batch.notes ? b.batch.notes + ' ' : '') + cc.summary + '.'; });
   const ruleCount = v.batches.reduce((a, b) => a + b.rules.length, 0);
   const review = v.batches.reduce((a, b) => a + b.rules.filter(r => r.review_note).length, 0);
   const usage = { input_tokens: 0, output_tokens: 0 };
+  if (thirdUsage) { usage.input_tokens += thirdUsage.input_tokens || 0; usage.output_tokens += thirdUsage.output_tokens || 0; }
   [rA, rB2, rT2].forEach(r => { if (r.status === 'fulfilled' && r.value.usage) { usage.input_tokens += r.value.usage.input_tokens || 0; usage.output_tokens += r.value.usage.output_tokens || 0; } });
   console.log(`[시책읽기] ${file.filename} → ${v.batches.length}묶음 ${ruleCount}건 (확인필요 ${review}건) · ${cc.summary} · 모델 ${ai.model}/${rB2.status === 'fulfilled' ? rB2.value.model : '-'} 토큰 입력 ${usage.input_tokens} / 출력 ${usage.output_tokens}`);
   return { batches: v.batches, warnings, usage, model: ai.model, verify: { second: !!vB, transcript: !!tr, total: cc.total, agreed: cc.agreed, flagged: cc.flagged } };
