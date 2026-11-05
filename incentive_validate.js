@@ -413,22 +413,26 @@ function auditAgainstTranscript(r, tr) {
 // ── 구역 제목·각주에 "250% : 엠금융 익익월 지급"처럼 % 옆에 적힌 지급 시기를 시책에 반영 ──
 function applyPayTiming(rules, text, company, warnings) {
   const t = String(text || '').replace(/\s+/g, ' ');
-  const pcts = new Set(); let x;
-  // "N% … 익익월" 처럼 % 바로 뒤(같은 괄호 안, 다른 %·지급시기 표기가 끼지 않는 범위)에 익익월이 올 때만 인정
-  const r1 = /(\d+(?:\.\d+)?)\s*%(?:(?!(?<!익)익월)[^%)/]){0,30}?익익월/g;
-  while ((x = r1.exec(t))) pcts.add(parseFloat(x[1]));
   const money = r => r.itype !== 'note' && r.itype !== 'goods' && r.itype !== 'tier';
+  // "N% … 익익월" 처럼 % 바로 뒤(같은 괄호 안, 다른 %·익월 표기가 끼지 않는 범위)에 익익월이 올 때만 그 %에 묶습니다
+  const bind = str => { const set = new Set(); const re = /(\d+(?:\.\d+)?)\s*%(?:(?!(?<!익)익월)[^%)/]){0,30}?익익월/g; let x; while ((x = re.exec(String(str || '').replace(/\s+/g, ' ')))) set.add(parseFloat(x[1])); return set; };
+  const pcts = bind(t);
   const fixed = [];
   const setTo2 = r => { r.pay_offset = 2; r.memo = norm(((r.memo ? r.memo + ' · ' : '') + '지급 시기: 익익월 (공지 구역 제목 표기)').slice(0, 500)); fixed.push(r.title); };
-  // ① 규칙 자체에 익익월이 적혀 있는데 지급 시기가 다르면 바로잡음
-  rules.forEach(r => { if (!money(r) || r.pay_offset === 2) return; if (/익익월/.test(`${r.title || ''} ${r.src_text || ''}`) && !/13\s*(회차|차월)/.test(`${r.title || ''} ${r.src_text || ''}`)) setTo2(r); });
-  // ② 공지의 "N% … 익익월" 표기와 같은 %를 가진 월 시책
+  rules.forEach(r => {
+    if (!money(r) || r.pay_offset === 2 || (r.pay_offset >= 13)) return;
+    const own = bind(r.src_text);
+    // ① 제목에 익익월이 적혀 있거나 ② 시책이 인용한 공지 문구에서 자기 지급률(%)이 익익월에 묶여 있을 때
+    // (같은 구역 제목을 인용한 다른 %의 시책까지 바꾸지 않도록 "인용문에 익익월이 있다"만으로는 바꾸지 않습니다)
+    if (/익익월/.test(r.title || '') || (r.calc === 'pct' && own.has(Number(r.value)))) setTo2(r);
+  });
+  // ③ 공지 전체에서 "N% … 익익월"로 묶인 %와 같은 월 시책이 하나뿐이면 그것
   pcts.forEach(v => {
-    const c = rules.filter(r => money(r) && r.calc === 'pct' && Number(r.value) === v && r.pay_offset !== 2 && !(r.pay_offset >= 13));
-    if (!c.length) return;
     const same = rules.filter(r => money(r) && r.calc === 'pct' && Number(r.value) === v && !(r.pay_offset >= 13));
-    const pick = same.length === 1 ? c : c.filter(r => /엠금융|익익월|자체|선지급/.test(`${r.title || ''} ${r.src_text || ''} ${r.memo || ''}`));
-    pick.forEach(setTo2);
+    same.filter(r => r.pay_offset !== 2).forEach(r => {
+      const other = same.length > 1 && !/엠금융|익익월|자체|선지급/.test(`${r.title || ''} ${r.memo || ''}`);
+      if (!other) setTo2(r);
+    });
   });
   if (fixed.length) warnings.push(`${company}: 공지에 ‘익익월 지급’으로 적힌 시책 ${fixed.length}건의 지급 시기를 익익월(2개월 뒤)로 맞췄습니다 — ${fixed.slice(0, 3).join(', ')}`);
 }
@@ -460,6 +464,48 @@ function applyInsuranceScope(rules, company, warnings) {
   });
   if (n) warnings.push(`${company}: 인보험 시책 ${n}건에 본사 기준(장기인보험에 포함되지 않는 실손·연금저축·펫·재물·1년 단체)을 적용해 제외 상품군을 보완했습니다.`);
 }
+
+// ── 같은 확인 문구가 여러 시책에 되풀이되면 시책마다 빨간 표시를 달지 않고 한 번만 안내합니다 ──
+function hoistCommonNotes(rules, company, warnings) {
+  const parts = rules.map(r => r.itype === 'note' || !r.review_note ? [] : String(r.review_note).split(/\s+·\s+/).map(x => x.trim()).filter(x => x.length >= 12 && !/확인되지 않|짝을 찾지|두 번 읽은|다릅니다|바꿨습니다|바로잡|정정/.test(x)));
+  const hoisted = [];
+  parts.forEach((ps, i) => ps.forEach(seg => {
+    if (hoisted.some(h => simil(h, seg) >= 0.6)) return;
+    const holders = parts.map((qs, j) => qs.some(q => simil(q, seg) >= 0.6) ? j : -1).filter(j => j >= 0);
+    if (holders.length >= 3) hoisted.push(seg);
+  }));
+  if (!hoisted.length) return;
+  rules.forEach((r, i) => {
+    if (!parts[i].length) return;
+    const keep = parts[i].filter(seg => !hoisted.some(h => simil(h, seg) >= 0.6));
+    r.review_note = keep.join(' · ');
+  });
+  hoisted.forEach(h => warnings.push(`${company}: 여러 시책에 공통인 확인 사항 — ${h.slice(0, 260)}`));
+}
+
+// ── 단체 전용 시책에 화재·재물이 섞이거나, 상품군과 추가 조건이 한 덩어리 이름으로 붙은 경우를 바로잡습니다 ──
+function fixMixedTags(rules) {
+  rules.forEach(r => {
+    if (!r.tag || r.itype === 'note' || r.itype === 'goods') return;
+    const groups = String(r.tag).split('+').map(g => g.trim()).filter(Boolean);
+    const out = [];
+    groups.forEach(g => {
+      const toks = g.split(',').map(x => x.trim()).filter(Boolean);
+      if (toks.length === 1 && !STD_CATS.includes(toks[0]) && toks[0].includes('·')) {
+        // "단체보험·보장P 15% 이상" → "단체" + "보장P 15% 이상"
+        const ps = toks[0].split('·').map(x => normTag(x)).filter(Boolean);
+        ps.forEach(x => out.push(x));
+      } else out.push(toks.map(normTag).filter(Boolean).join(','));
+    });
+    let res = out.filter(Boolean);
+    // 단체 전용 시책(제목이 단체로 시작)이면 화재·재물 조건을 빼고, 반대로 재물 전용이면 단체를 뺍니다
+    if (/^\s*단체/.test(r.title || '') && !/재물/.test(r.title || '')) res = res.filter(x => x !== '화재·재물');
+    if (/^\s*재물/.test(r.title || '') && !/단체/.test(r.title || '')) res = res.filter(x => x !== '단체');
+    const next = Array.from(new Set(res)).join('+');
+    if (next && next !== r.tag) { r.memo = norm(((r.memo ? r.memo + ' · ' : '') + `상품군 조건을 ‘${next}’로 정리`).slice(0, 500)); r.tag = next; }
+  });
+}
+
 
 // ── 판매건수 누계처럼 계산 대상이 아닌 시상은 안내로 두고, 빨간 "확인 필요" 표시는 달지 않습니다 ──
 function calmCountNotes(rules) {
@@ -545,6 +591,8 @@ function crossCheck(outA, outB, tr, srcText) {
     // 종류(월 시책 ↔ 구간표 등)가 다른 항목은 이름이 꽤 비슷할 때만 같은 시책으로 봅니다(엉뚱한 시책과 짝지어 거짓 경고가 나는 것을 막음)
     if (best && best.itype !== a.itype && simil(a.title, best.title) < 0.5) return null;
     // 같은 종류라도 이름·값·상품군·구간이 하나도 닮지 않았으면 같은 시책으로 보지 않습니다
+    // 월 시책끼리 지급률(%)이 다른데 이름도 거의 같지 않으면 서로 다른 시책입니다(예: 인보험 150% ↔ 단체 100%)
+    if (best && a.itype !== 'tier' && best.itype !== 'tier' && a.value && best.value && a.value !== best.value && simil(a.title, best.title) < 0.8) return null;
     if (best) {
       const tierHit = (a.tiers || []).some(t => (best.tiers || []).some(u => u.min === t.min));
       const like = simil(a.title, best.title) >= 0.35 || (a.value && a.value === best.value) || (a.tag && a.tag === best.tag) || tierHit;
@@ -562,6 +610,7 @@ function crossCheck(outA, outB, tr, srcText) {
       applyPayTiming(ba.rules, tt + ' ' + String(srcText || ''), ba.batch.company, warnings);
       applyGradeOnly(ba.rules, tr && tr.grades, ba.batch.company, warnings);
       calmCountNotes(ba.rules);
+      if (ba.batch.grp === 'nonlife') fixMixedTags(ba.rules);
       if (ba.batch.grp === 'nonlife') applyInsuranceScope(ba.rules, ba.batch.company, warnings);
       if (tr && ba.batch.grp === 'nonlife') reconcileProducts(ba.rules, tr.products, ba.batch.company, warnings);
     }
@@ -607,7 +656,7 @@ function crossCheck(outA, outB, tr, srcText) {
       } else {
         if (au.msgs.length && a.itype === 'tier' && bestB && bestB.itype === 'tier' && Array.isArray(bestB.tiers) && !bAudit.msgs.length && (bAudit.specific || !tr)) {
           a.tiers = bestB.tiers.map(t => Object.assign({}, t)); au.msgs.length = 0; msgs.length = 0;
-          msgs.push('첫 번째 읽기의 구간 금액이 공지 숫자와 달라 공지와 일치하는 두 번째 읽기 결과로 바꿨습니다');
+          warnings.push(`${ba.batch.company}: ‘${a.title}’의 구간 금액이 공지 숫자와 달라, 공지와 일치하는 두 번째 읽기 결과로 바로잡았습니다(공지 원문과 일치).`);
         } else if (au.msgs.length && a.itype === 'tier' && bestB && bestB.itype === 'tier' && (a.tiers || []).length && ruleSig(a).구간 === ruleSig(bestB).구간 && bAudit.msgs.length) {
           au.msgs.length = 0;   // 두 번 읽은 결과가 구간표 숫자까지 똑같고 옮겨 적기만 다르면, 옮겨 적기가 그 표의 칸을 빠뜨렸거나 다른 표와 섞인 것으로 봅니다
         } else if (tr && !au.msgs.length && bestB && bAudit.msgs.length) {
@@ -617,6 +666,7 @@ function crossCheck(outA, outB, tr, srcText) {
       }
       if (msgs.length) { flagged++; addNote(a, msgs.join(' · ')); } else agreed++;
     }
+    hoistCommonNotes(ba.rules, ba.batch.company, warnings);
     const only = bGood ? pool.filter(b => !used.has(b)) : [];
     if (only.length) warnings.push(`${ba.batch.company}: 두 번째 읽기에만 나온 항목 ${only.length}건 — ${only.slice(0, 3).map(b => `${b.title.slice(0, 24)}(${b.start}~${b.end})`).join(', ')}${only.length > 3 ? ' 등' : ''}. 공지에서 빠진 시책이 없는지 확인하세요.`);
   }
