@@ -544,14 +544,16 @@ function applyGradeOnly(rules, trGrades, company, warnings) {
 // ── 공지에 적힌 상품명 목록(옮겨 적은 것)과 시책의 상품명 키워드를 맞춰 보고, 읽다가 달라진 이름을 바로잡음 ──
 function reconcileProducts(rules, trProducts, company, warnings) {
   const P = [];
-  (Array.isArray(trProducts) ? trProducts : []).forEach(x => String(x || '').split(/[,，、\n]/).forEach(y => { y = norm(y); if (y.length >= 2) P.push(y); }));
+  (Array.isArray(trProducts) ? trProducts : []).forEach(x => String(x || '').split(/[,，、\n\/]/).forEach(y => { y = norm(y); if (y.length >= 2) P.push(y); }));
   if (P.length < 2) return;
   const sq = v => squash(v);
   const inP = k => P.some(p => sq(p).includes(sq(k)) || sq(k).includes(sq(p)));
-  let fixedN = 0, badN = 0;
+  let fixedN = 0; const badSet = new Set(), fixSet = new Set();
   rules.forEach(r => {
     if (!Array.isArray(r.prod_kw) || !r.prod_kw.length) return;
-    const kws = r.prod_kw.slice();
+    const hadSlash = r.prod_kw.some(k => /\//.test(k));
+    const kws = r.prod_kw.flatMap(k => String(k).split('/').map(z => norm(z)).filter(z => z.length >= 2));
+    if (hadSlash) { r.prod_kw = Array.from(new Set(kws)); if (/상품명.*(생략|불명확|슬래시)|슬래시/.test(r.review_note || '')) r.review_note = ''; }
     const miss = kws.filter(k => !inP(k));
     if (!miss.length) return;
     // 목록 안에서 어느 상품이 이 시책 소속인지 알려면 시책 상품이 목록 전체와 같은 개수여야 가장 믿을 만함
@@ -560,20 +562,20 @@ function reconcileProducts(rules, trProducts, company, warnings) {
     const out = kws.slice();
     if (kws.length === P.length) {
       // 같은 개수·같은 순서이면 순서대로 짝지어 읽기 오류만 교체
-      kws.forEach((k, i) => { if (!inP(k)) { out[i] = P[i]; fixedN++; } });
+      kws.forEach((k, i) => { if (!inP(k)) { out[i] = P[i]; fixedN++; fixSet.add(k + ' → ' + P[i]); } });
     } else {
       const pool = freeP.slice();
       kws.forEach((k, i) => {
         if (inP(k)) return;
         let best = -1, bs = 0.45; pool.forEach((p, j) => { const sc = simil(k, p); if (sc > bs) { bs = sc; best = j; } });
-        if (best >= 0) { out[i] = pool[best]; pool.splice(best, 1); fixedN++; } else badN++;
+        if (best >= 0) { out[i] = pool[best]; pool.splice(best, 1); fixedN++; fixSet.add(k + ' → ' + out[i]); } else badSet.add(k);
       });
     }
     r.prod_kw = Array.from(new Set(out.flatMap(k => String(k).split('/').map(z => norm(z)).filter(z => z.length >= 2))));
     if (miss.length && out.some((k, i) => k !== kws[i])) r.memo = norm(((r.memo ? r.memo + ' · ' : '') + '상품명은 공지 각주 글자와 맞춰 바로잡음').slice(0, 500));
   });
-  if (fixedN) warnings.push(`${company}: 읽는 도중 달라진 상품명 ${fixedN}개를 공지 각주의 글자에 맞춰 바로잡았습니다. 주력상품 목록을 원문과 한 번 더 대조하세요.`);
-  if (badN) warnings.push(`${company}: 공지 각주와 맞지 않는 상품명 ${badN}개가 남아 있습니다 — 주력상품 목록을 원문과 직접 대조하세요.`);
+  if (fixSet.size) warnings.push(`${company}: 읽는 도중 달라진 상품명 ${fixSet.size}개를 공지 각주의 글자에 맞춰 바로잡았습니다(${Array.from(fixSet).slice(0, 5).join(', ')}). 주력상품 목록을 원문과 한 번 더 대조하세요.`);
+  if (badSet.size) warnings.push(`${company}: 공지 각주와 맞지 않는 상품명 ${badSet.size}개가 남아 있습니다(${Array.from(badSet).slice(0, 8).join(', ')}) — 주력상품 목록을 원문과 직접 대조하세요.`);
 }
 
 function crossCheck(outA, outB, tr, srcText) {
