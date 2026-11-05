@@ -19,7 +19,7 @@ const crypto = require('crypto');
 const multer = require('multer');
 const { toInput } = require('./incentive_files');
 const { SYSTEM_PROMPT, userPrompt, IDENTIFY_PROMPT, TRANSCRIBE_PROMPT } = require('./incentive_prompt');
-const { validate, crossCheck } = require('./incentive_validate');
+const { validate, crossCheck, applySubstitutions } = require('./incentive_validate');
 const { applyProfiles } = require('./incentive_profiles');
 
 const router = express.Router();
@@ -194,6 +194,13 @@ async function runExtract(file, products, nonlife, force) {
     } catch (e) { warnings.push('세 번째 읽기를 하지 못했습니다: ' + String(e && e.message || e).slice(0, 100)); }
   }
   applyProfiles(v.batches, warnings);   // 보험사별 고정 기준표 적용(한도·제외 상품군·지급 시기)
+  v.batches.forEach(b => { if (b.batch.grp === 'nonlife') applySubstitutions(b.rules, b.batch.company, warnings); });   // 특정 상품에 다른 시책이 대신 적용되는 경우 일반 시책에서 제외
+  { // 요약의 '확인 필요' 건수는 최종 결과(후처리 뒤)를 기준으로 다시 셉니다
+    const money = v.batches.reduce((acc, b) => acc.concat(b.rules.filter(r => !['note', 'goods'].includes(r.itype))), []);
+    const flaggedNow = money.filter(r => r.review_note).length;
+    cc.summary = cc.summary.replace(/계산 대상 \d+건 중 \d+건 일치, \d+건 확인 필요/, `계산 대상 ${money.length}건 중 ${money.length - flaggedNow}건 일치, ${flaggedNow}건 확인 필요`);
+    cc.total = money.length; cc.flagged = flaggedNow; cc.agreed = money.length - flaggedNow;
+  }
   v.batches.forEach(b => { b.batch.notes = (b.batch.notes ? b.batch.notes + ' ' : '') + cc.summary + '.'; });
   const ruleCount = v.batches.reduce((a, b) => a + b.rules.length, 0);
   const review = v.batches.reduce((a, b) => a + b.rules.filter(r => r.review_note).length, 0);

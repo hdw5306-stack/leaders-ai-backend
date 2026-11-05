@@ -606,6 +606,85 @@ function fixProductDigits(rules, trProducts, company, warnings) {
   if (n) warnings.push(`${company}: 설명 문장 속 상품명 숫자 ${n}곳을 공지 각주의 숫자에 맞춰 바로잡았습니다.`);
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// [근본 원칙] 빨간 "확인 필요"는 **읽기 자체가 불확실할 때**(숫자·구간·기간·지급시기가 두 번 읽기와 다르거나 공지 숫자와 다를 때,
+// 글자가 흐릴 때 등)에만 붙입니다. "프로그램이 자동 계산하지 못하는 사업 조건"(구성비, 한도, 제외 상품 등)에 대한 AI의 걱정은
+// 시책 카드에 빨간 표시로 달지 않고, 보험사별로 한 번만 노란 '참고'로 모아 보여 줍니다.
+// ───────────────────────────────────────────────────────────────────────────
+const KEEP_RE = /드문 값|읽지 못|매우 큽니다|너무 작|1,000원 미만|2개월 초과|연속가동|짝|앞·뒤|수수료표|찾지 못|일부 상품에만|겹쳐 합산|단위|인용한 공지|공지 숫자|원문 기준|두 번|확인되지 않|흐려|불분명|판독|추정|글자|누락|상품 범위|표기가 다르|최소 보험료/;
+function demoteAiNotes(rules, company, warnings) {
+  const hoist = new Map();
+  rules.forEach(r => {
+    if (!r.review_note || r.itype === 'note' || r.itype === 'goods') return;
+    const segs = String(r.review_note).split(/\s+·\s+/).map(x => x.trim()).filter(Boolean);
+    const keep = [], drop = [];
+    segs.forEach(x => (KEEP_RE.test(x) ? keep : drop).push(x));
+    if (!drop.length) return;
+    r.review_note = keep.join(' · ');
+    drop.forEach(x => {
+      const t = norm(x.replace(/^확인 필요\s*[—-]\s*/, '')).slice(0, 150);
+      const key = t.replace(/\s+/g, '').slice(0, 24);
+      if (!hoist.has(key)) hoist.set(key, { t, titles: [] });
+      hoist.get(key).titles.push(String(r.title || '').slice(0, 20));
+    });
+  });
+  const list = Array.from(hoist.values());
+  list.slice(0, 6).forEach(h => warnings.push(`${company} 참고(자동 계산할 수 없는 조건): ${h.t}${h.titles.length > 1 ? ` (${h.titles.slice(0, 3).join(', ')}${h.titles.length > 3 ? ' 외' : ''} 등 ${h.titles.length}건)` : ` (${h.titles[0]})`}`));
+  if (list.length > 6) warnings.push(`${company} 참고 사항이 ${list.length - 6}건 더 있습니다 — 공지의 공통 기준을 확인하세요.`);
+}
+
+// ── 인보험 시책의 상품군 표기 정리: 장기인보험 6개 상품군을 전부 나열했거나, 같은 상품군을 겹쳐 적었거나, 제외 상품군과 모순되는 경우 ──
+const LT6 = ['상해(운전자)', '건강(의료)', '어린이', '유병자', '치아', '간병'];
+function cleanInsuranceTags(rules) {
+  rules.forEach(r => {
+    if (r.itype === 'note' || r.itype === 'goods') return;
+    // 제목이 "…— 운전자(보험) 외"이면 '운전자 말고 나머지'라는 뜻이므로 운전자 상품군은 제외 상품군에 넣습니다
+    if (/[—-]\s*운전자(?:보험)?\s*외\s*$|^\s*운전자(?:보험)?\s*외\b/.test(r.title || '')) {
+      const cur = Array.isArray(r.not_tags) ? r.not_tags : [];
+      if (!cur.includes('상해(운전자)')) r.not_tags = cur.concat('상해(운전자)');
+    }
+    if (!r.tag) return;
+    const not = new Set(Array.isArray(r.not_tags) ? r.not_tags : []);
+    let groups = String(r.tag).split('+').map(g => Array.from(new Set(g.split(',').map(x => x.trim()).filter(Boolean))));
+    groups = groups.map(g => g.filter(t => !not.has(t))).filter(g => g.length);   // 제외 상품군과 모순되는 요구는 뺌
+    groups = groups.filter((g, i) => !groups.some((h, j) => j !== i && h.every(t => g.includes(t)) && (h.length < g.length || j < i)));   // 다른 묶음이 더 좁으면(포함 관계) 넓은 묶음은 불필요
+    const flat = new Set(groups.flat());
+    const need = LT6.filter(t => !not.has(t));
+    if (groups.length === 1 && need.length >= 2 && need.every(t => flat.has(t)) && flat.size <= LT6.length && /인보험|운전자|기본시상|추가시상|가동시상|구간/.test(`${r.title || ''} ${r.src_text || ''}`)) groups = [];   // 사실상 장기인보험 전체
+    const next = groups.map(g => g.join(',')).join('+');
+    if (next !== r.tag) { r.memo = norm(((r.memo ? r.memo + ' · ' : '') + (next ? `상품군 조건을 ‘${next}’로 정리` : '상품군은 장기인보험 전체(제외 상품군 적용)')).slice(0, 500)); r.tag = next; }
+  });
+}
+
+// ── "어린이종합보험Q·하이바이크운전자보험은 250% (300% 대신)"처럼 특정 상품에는 다른 시책이 대신 적용될 때,
+//    일반 시책에서 그 상품을 빼서(prod_kw 의 "!상품명") 두 시책이 겹쳐 계산되지 않게 합니다 ──
+function applySubstitutions(rules, company, warnings) {
+  const tokens = x => String(x || '').split(/[+,]/).map(t => t.trim()).filter(Boolean);
+  const sq = x => String(x || '').replace(/\s+/g, '').toLowerCase();
+  let n = 0;
+  rules.forEach(R => {
+    if ((R.itype !== 'monthly' && R.itype !== 'month13') || !Array.isArray(R.prod_kw) || !R.prod_kw.some(k => String(k)[0] !== '!') || !R.value) return;
+    const Rt = tokens(R.tag);
+    rules.forEach(G => {
+      if (G === R || G.itype !== R.itype || G.start !== R.start || G.end !== R.end || (G.pay_offset || 0) !== (R.pay_offset || 0)) return;
+      if (Number(G.value) === Number(R.value) || !G.value) return;
+      if (Array.isArray(G.prod_kw) && G.prod_kw.some(k => String(k)[0] !== '!')) return;   // 일반(상품 제한 없는) 시책만
+      const Gt = tokens(G.tag), Gn = Array.isArray(G.not_tags) ? G.not_tags : [];
+      if (Gt.length && Rt.length && !Rt.some(t => Gt.includes(t))) return;
+      if (Rt.length && Rt.every(t => Gn.includes(t))) return;
+      const ev = /대신|별도\s*규칙|별도규칙/.test(`${G.memo || ''} ${R.memo || ''}`) || R.prod_kw.some(k => String(k)[0] !== '!' && sq(`${G.memo || ''} ${G.src_text || ''}`).includes(sq(k)));
+      if (!ev) return;
+      const add = R.prod_kw.filter(k => String(k)[0] !== '!').map(k => '!' + k);
+      const cur = Array.isArray(G.prod_kw) ? G.prod_kw.slice() : [];
+      const fresh = add.filter(k => !cur.includes(k));
+      if (!fresh.length) return;
+      G.prod_kw = cur.concat(fresh); n++;
+      G.memo = norm(((G.memo ? G.memo + ' · ' : '') + `${fresh.map(k => k.slice(1)).join(', ')}은(는) 별도 시책(${R.value}%)이 대신 적용되어 이 시책에서 제외`).slice(0, 500));
+    });
+  });
+  if (n) warnings.push(`${company}: 특정 상품에 다른 시책이 대신 적용되는 경우 ${n}건 — 일반 시책에서 그 상품을 빼서 두 시책이 겹쳐 계산되지 않게 했습니다(계약 입력에 상품명을 적어야 구분됩니다).`);
+}
+
 // ── 판매건수 누계처럼 계산 대상이 아닌 시상은 안내로 두고, 빨간 "확인 필요" 표시는 달지 않습니다 ──
 function calmCountNotes(rules) {
   rules.forEach(r => {
@@ -723,6 +802,7 @@ function crossCheck(outA, outB, tr, srcText) {
       applyGradeOnly(ba.rules, tr && tr.grades, ba.batch.company, warnings);
       calmCountNotes(ba.rules);
       if (ba.batch.grp === 'nonlife') fixMixedTags(ba.rules);
+      if (ba.batch.grp === 'nonlife') cleanInsuranceTags(ba.rules);
       if (ba.batch.grp === 'nonlife') calmKnownNotes(ba.rules);
       if (ba.batch.grp === 'nonlife') applyInsuranceScope(ba.rules, ba.batch.company, warnings);
       if (ba.batch.grp === 'nonlife') { fixSilsonYubyeong(ba.rules, tt + ' ' + String(srcText || ''), ba.batch.company, warnings); splitDriverCap(ba.rules, tt + ' ' + String(srcText || ''), ba.batch.company, warnings); }
@@ -741,7 +821,7 @@ function crossCheck(outA, outB, tr, srcText) {
     aMoney.forEach(a => { const b = pickB(a, pool, probe); if (b) { probe.add(b); hit++; } });
     const bGood = !!bb && aMoney.length > 0 && hit / aMoney.length >= 0.6;
     if (bGood) bUsable = true;
-    const used = new Set();
+    const used = new Set(); const softTitles = [];
     for (const a of ba.rules) {
       if (!money(a)) continue;
       total++;
@@ -749,8 +829,16 @@ function crossCheck(outA, outB, tr, srcText) {
       let bestB = null;
       if (bGood) {
         const best = pickB(a, pool, used);
-        if (!best) { if (!tr) msgs.push('두 번째 읽기에서는 이 항목이 나오지 않았습니다'); }
-        else { bestB = best; used.add(best); const d = diffText(a, best, tr ? `${tr.rules_text || ''} ${tr.text || ''}` : ''); if (d.length) msgs.push('두 번 읽은 결과가 다릅니다 — ' + d.slice(0, 3).join(' / ')); }
+        if (!best) {
+          // '운전자'와 '그 외'로 나눈 시책은 두 번째 읽기가 하나로 합쳐 적었을 수 있으므로 짝이 없어도 문제 삼지 않습니다
+          const splitSibling = /운전자/.test(`${a.title || ''} ${a.tag || ''}`) && ba.rules.some(x => x !== a && x.itype === a.itype && x.start === a.start && x.end === a.end && Number(x.value) === Number(a.value) && /운전자/.test(`${x.title || ''} ${x.tag || ''}`));
+          if (!tr && !splitSibling) msgs.push('두 번째 읽기에서는 이 항목이 나오지 않았습니다');
+        }
+        else { bestB = best; used.add(best); const d = diffText(a, best, tr ? `${tr.rules_text || ''} ${tr.text || ''}` : '');
+          // 값·기간·지급시기·구간처럼 숫자로 확인되는 차이만 빨간 표시, 상품군·제외·한도·단위 표기 차이는 모아서 노란 참고로만 알립니다
+          const hardD = d.filter(x => /^(값|시작|끝|유형|지급시기|구간)/.test(x)), softD = d.filter(x => !hardD.includes(x));
+          if (hardD.length) msgs.push('두 번 읽은 결과가 다릅니다 — ' + hardD.slice(0, 3).join(' / '));
+          if (softD.length) softTitles.push(String(a.title || '').slice(0, 20)); }
       }
       applyMinFromConds(a, tr);
       // 프로그램이 판정하지 못하는 추가 조건(보장구성비 등)이나, 최소 보험료인지 불분명한 "30만↑"가 붙은 월 시책은 사람이 확인하도록 표시
@@ -760,7 +848,7 @@ function crossCheck(outA, outB, tr, srcText) {
         else if (/\d+(?:\.\d+)?\s*만\s*원?\s*↑\s*(?:&|및|\+)/.test(q)) msgs.push('공지의 "N만↑" 조건이 건당 최소 보험료인지 확인 필요 (지금은 모든 계약에 계산됨)');
       }
       // 독립적인 대조가 전혀 없어도, 항목의 숫자가 자기가 인용한 공지 문구(src_text)와 다르면 걸러냅니다
-      if (a.calc === 'pct' && a.value > 0 && a.src_text) {
+      if (a.calc === 'pct' && a.value > 0 && a.src_text && !/별도\s*규칙|대신\s*적용/.test(a.memo || '')) {
         const ps = []; String(a.src_text).replace(/(\d+(?:\.\d+)?)\s*%/g, (m, x) => { ps.push(parseFloat(x)); });
         if (ps.length && !ps.includes(Number(a.value))) msgs.push(`입력된 ${a.value}%가 인용한 공지 문구(${ps.join('·')}%)와 다릅니다`);
       }
@@ -782,6 +870,8 @@ function crossCheck(outA, outB, tr, srcText) {
       if (msgs.length) { flagged++; addNote(a, msgs.join(' · ')); } else agreed++;
     }
     hoistCommonNotes(ba.rules, ba.batch.company, warnings);
+    if (softTitles.length) warnings.push(`${ba.batch.company}: 두 번째 읽기와 상품군·제외 상품군·건당 한도 표기가 다른 시책 ${softTitles.length}건(${softTitles.slice(0, 3).join(', ')}${softTitles.length > 3 ? ' 외' : ''}) — 금액·기간·지급 시기는 같습니다. 필요하면 공지 공통 기준을 확인하세요.`);
+    demoteAiNotes(ba.rules, ba.batch.company, warnings);
     const only = bGood ? pool.filter(b => !used.has(b)) : [];
     if (only.length) warnings.push(`${ba.batch.company}: 두 번째 읽기에만 나온 항목 ${only.length}건 — ${only.slice(0, 3).map(b => `${b.title.slice(0, 24)}(${b.start}~${b.end})`).join(', ')}${only.length > 3 ? ' 등' : ''}. 공지에서 빠진 시책이 없는지 확인하세요.`);
   }
@@ -791,4 +881,4 @@ function crossCheck(outA, outB, tr, srcText) {
   return { warnings, summary, total, agreed, flagged, bUsable };
 }
 
-module.exports = { validate, norm, crossCheck, parseWon };
+module.exports = { validate, norm, crossCheck, parseWon, applySubstitutions, cleanInsuranceTags, demoteAiNotes };
