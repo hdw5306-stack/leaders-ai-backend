@@ -24,6 +24,13 @@ const PROFILES = {
     cap: { default: 200000 },
     pay: [{ re: /엠금융.*자체|자체시상/, offset: 1 }],
   },
+  '메리츠화재': {
+    note: '건당 30만원(운전자 10만원), 인보험 시책에서 함께하는단체보험·펫퍼민트·실손 제외, 엠금융 선지급 250%는 익익월',
+    cap: { default: 300000 },
+    driver: { cap: 100000, titleRe: /정규\s*시상\s*인보험|선지급/ },
+    ensureNot: { titleRe: /인보험|선지급/, tags: ['실손', '연금·저축', '화재·재물', '단체', '단체(1년)', '펫'] },
+    pay: [{ re: /선지급/, offset: 2 }],
+  },
   'DB손보': {
     note: '일반 건당 30만원 한도(운전자 등 10만원·치아사랑 7만원은 안내), 인보험 250%는 엠금융 익익월',
     cap: { default: 300000 },
@@ -59,7 +66,7 @@ function applyProfiles(batches, warnings) {
       if (Array.isArray(r.not_tags) && r.not_tags.includes(t)) { r.not_tags = r.not_tags.filter(x => x !== t); done.strip++; }
     }));
     if (p.ensureNot) money.forEach(r => {
-      if (r.itype !== 'monthly' && r.itype !== 'month13') return;
+      if (r.itype !== 'monthly' && r.itype !== 'month13' && r.itype !== 'tier') return;
       if (r.tag || !p.ensureNot.titleRe.test(r.title || '')) return;
       const cur = Array.isArray(r.not_tags) ? r.not_tags.slice() : [];
       const add = p.ensureNot.tags.filter(t => !cur.includes(t));
