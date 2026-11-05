@@ -853,6 +853,12 @@ function crossCheck(outA, outB, tr, srcText) {
         if (ps.length && !ps.includes(Number(a.value))) msgs.push(`입력된 ${a.value}%가 인용한 공지 문구(${ps.join('·')}%)와 다릅니다`);
       }
       const au = auditAgainstTranscript(a, tr);
+      // 옮겨 적기에서 짝을 못 찾았을 뿐 틀렸다는 증거가 없고, 시책이 인용한 공지 문구(src_text)의 구간·금액 짝이 모두 일치하면 믿습니다
+      if (au.msgs.length && a.itype === 'tier' && au.msgs.every(m => /짝을 찾지 못/.test(m)) && (a.tiers || []).length) {
+        const pr = pairsFromText(a.src_text);
+        const own = (a.tiers || []).filter(t => !t.prev);
+        if (pr.size >= 2 && own.length && own.every(t => pr.get(t.min) === t.pay)) au.msgs.length = 0;
+      }
       const bAudit = bestB ? auditAgainstTranscript(bestB, tr) : { msgs: ['-'], specific: false };
       if (au.specific && !au.msgs.length) {
         msgs.length = 0; // 공지의 해당 표와 한 칸씩 일치 — 두 번째 읽기와 달라도 신뢰
