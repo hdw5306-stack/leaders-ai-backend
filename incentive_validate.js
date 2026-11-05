@@ -32,8 +32,8 @@ function monthRange(period, today) {
   return [`${y}-${p(mo)}-01`, `${y}-${p(mo)}-${p(last)}`];
 }
 
-const STD_CATS = ['상해(운전자)', '건강(의료)', '어린이', '유병자', '연금·저축', '화재·재물', '펫', '치아', '간병', '실손', '단체'];
-const TAG_ALIAS = { '재물&단체': '화재·재물', '재물·단체': '화재·재물', '재물 & 단체': '화재·재물', '단독실손': '실손', '실손보험': '실손', '단체보험': '단체' };
+const STD_CATS = ['상해(운전자)', '건강(의료)', '어린이', '유병자', '연금·저축', '화재·재물', '펫', '치아', '간병', '실손', '단체', '단체(1년)'];
+const TAG_ALIAS = { '재물&단체': '화재·재물', '재물·단체': '화재·재물', '재물 & 단체': '화재·재물', '단독실손': '실손', '실손보험': '실손', '단체보험': '단체', '1년단체': '단체(1년)', '1년 단체': '단체(1년)', '단체 1년': '단체(1년)', '단체(1년만기)': '단체(1년)', '단체 1년만기': '단체(1년)' };
 const CAT_WORDS = [['펫', ['펫', '반려']], ['화재·재물', ['화재', '재물']], ['실손', ['실손']], ['단체', ['단체']], ['상해(운전자)', ['운전자', '상해']], ['치아', ['치아']], ['간병', ['간병', '치매']], ['연금·저축', ['연금', '저축']], ['어린이', ['어린이']], ['유병자', ['유병자', '간편']], ['건강(의료)', ['건강', '의료', '실손']]];
 function normTag(t) {
   t = String(t || '').replace(/\s+/g, ' ').trim();
@@ -433,6 +433,34 @@ function applyPayTiming(rules, text, company, warnings) {
   if (fixed.length) warnings.push(`${company}: 공지에 ‘익익월 지급’으로 적힌 시책 ${fixed.length}건의 지급 시기를 익익월(2개월 뒤)로 맞췄습니다 — ${fixed.slice(0, 3).join(', ')}`);
 }
 
+// ── "장기인보험/인보험" 시책의 상품 범위(본사 확정 기준) ──
+// 장기인보험 = 상해(운전자)·건강(의료)·어린이·유병자·치아·간병 + 3년 이상 단체보험.
+// 실손(단독)·연금·저축·펫·화재·재물·1년 만기 단체보험은 장기인보험이 아니므로, 공지가 "포함"이라고 명시하지 않았다면 제외합니다.
+const INS_BASE_EXCL = ['실손', '연금·저축', '펫', '화재·재물', '단체(1년)'];
+function applyInsuranceScope(rules, company, warnings) {
+  let n = 0;
+  rules.forEach(r => {
+    if (r.itype === 'note' || r.itype === 'goods') return;
+    const q = `${r.title || ''} ${r.src_text || ''}`;
+    if (!/인보험/.test(q)) return;
+    if (/^\s*(펫|반려|재물|단체|적립|화재)/.test(r.title || '') || /(펫보험|반려견|반려묘|재물보험|단체보험|적립보험료)\s*(기본|추가)?\s*시상/.test(r.title || '')) return;
+    const inc = t => new RegExp(String(t).replace(/\(.*\)/, '').replace(/·/g, '.?') + '[^,.;/\\n]{0,8}포함').test(q);
+    const base = INS_BASE_EXCL.filter(t => !inc(t));
+    const tagList = String(r.tag || '').split(',').map(x => x.trim()).filter(Boolean);
+    const changed = [];
+    if (tagList.length) {
+      const keep = tagList.filter(t => !(base.includes(t) && t !== '단체(1년)'));
+      if (keep.length && keep.length !== tagList.length) { r.tag = keep.join(','); changed.push(...tagList.filter(t => !keep.includes(t))); }
+    } else {
+      const cur = Array.isArray(r.not_tags) ? r.not_tags.slice() : [];
+      const add = base.filter(t => !cur.includes(t));
+      if (add.length) { r.not_tags = cur.concat(add); changed.push(...add); }
+    }
+    if (changed.length) { n++; r.memo = norm(((r.memo ? r.memo + ' · ' : '') + `장기인보험 기준에 따라 ${changed.map(x => x.replace(/\(.*\)/, '')).join('·')}은(는) 이 시책에서 제외`).slice(0, 500)); }
+  });
+  if (n) warnings.push(`${company}: 인보험 시책 ${n}건에 본사 기준(장기인보험에 포함되지 않는 실손·연금저축·펫·재물·1년 단체)을 적용해 제외 상품군을 보완했습니다.`);
+}
+
 // ── 판매건수 누계처럼 계산 대상이 아닌 시상은 안내로 두고, 빨간 "확인 필요" 표시는 달지 않습니다 ──
 function calmCountNotes(rules) {
   rules.forEach(r => {
@@ -534,6 +562,7 @@ function crossCheck(outA, outB, tr, srcText) {
       applyPayTiming(ba.rules, tt + ' ' + String(srcText || ''), ba.batch.company, warnings);
       applyGradeOnly(ba.rules, tr && tr.grades, ba.batch.company, warnings);
       calmCountNotes(ba.rules);
+      if (ba.batch.grp === 'nonlife') applyInsuranceScope(ba.rules, ba.batch.company, warnings);
       if (tr && ba.batch.grp === 'nonlife') reconcileProducts(ba.rules, tr.products, ba.batch.company, warnings);
     }
     if (tr) {
