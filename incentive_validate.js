@@ -881,6 +881,8 @@ function crossCheck(outA, outB, tr, srcText) {
       // 독립적인 대조가 전혀 없어도, 항목의 숫자가 자기가 인용한 공지 문구(src_text)와 다르면 걸러냅니다
       if (a.calc === 'pct' && a.value > 0 && a.src_text && !/별도\s*규칙|대신\s*적용/.test(a.memo || '')) {
         const ps = []; String(a.src_text).replace(/(\d+(?:\.\d+)?)\s*%/g, (m, x) => { ps.push(parseFloat(x)); });
+        // PDF 글자 층이 숫자를 "15 0%", "5 50%"처럼 끊어 놓은 경우(150%, 550%)도 같은 수로 인정합니다
+        String(a.src_text).replace(/(?<![\d.])(\d{1,3}) (\d{1,3})\s*%/g, (m, x, y) => { ps.push(parseFloat(x + y)); });
         if (ps.length && !ps.includes(Number(a.value))) msgs.push(`입력된 ${a.value}%가 인용한 공지 문구(${ps.join('·')}%)와 다릅니다`);
       }
       const au = auditAgainstTranscript(a, tr);
