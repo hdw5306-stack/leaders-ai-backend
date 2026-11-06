@@ -84,7 +84,8 @@ async function callAI({ system, content, maxOutput, rotate }) {
   const order = rotate && ml.length > 1 ? ml.slice(rotate % ml.length).concat(ml.slice(0, rotate % ml.length)) : ml;
   for (const model of order) {
     let noTemp = false;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    let budget = maxOutput || 16000;   // 출력 한도(생각하는 데 쓴 토큰 포함) — 모자라면 자동으로 늘려 다시 요청합니다
+    for (let attempt = 0; attempt < 5; attempt++) {
       try {
         const r = await fetch(`${OPENAI_BASE}/v1/responses`, {
           method: 'POST',
@@ -94,13 +95,17 @@ async function callAI({ system, content, maxOutput, rotate }) {
             instructions: system,
             input: [{ role: 'user', content }],
             text: { format: { type: 'json_object' } },
-            max_output_tokens: maxOutput || 16000,
+            max_output_tokens: budget,
             ...(noTemp ? {} : { temperature: 0 }),
           }),
         });
         if (r.ok) {
           const data = await r.json();
-          if (data.status === 'incomplete') throw Object.assign(new Error('공지가 너무 길어 AI가 한 번에 다 읽지 못했습니다. 공지를 나누어(보험사별/쪽별) 올려 주세요.'), { fatal: true });
+          if (data.status === 'incomplete') {
+            // 답이 중간에 잘림(출력 한도 부족: 시책이 많거나 AI가 오래 생각한 경우) → 한도를 2배로 늘려 같은 모델로 다시 요청
+            if (budget < 64000) { const nb = Math.min(budget * 2, 64000); console.error(`[시책읽기] 출력 한도 부족(${budget}) → ${nb} 로 늘려 다시 요청 (${model})`); budget = nb; continue; }
+            throw Object.assign(new Error('공지가 너무 길어 AI가 한 번에 다 읽지 못했습니다. 공지를 나누어(보험사별/쪽별) 올려 주세요.'), { fatal: true });
+          }
           const text = extractText(data);
           if (!text) throw new Error('AI가 빈 응답을 보냈습니다.');
           return { json: parseJson(text), usage: data.usage || {}, model };
