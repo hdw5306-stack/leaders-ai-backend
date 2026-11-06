@@ -319,6 +319,19 @@ function validate(raw, ctx) {
         warnings.push(`${batch.company}: 건당 인정 한도가 여러 가지(${list})입니다. 시책에 이미 들어간 한도 외에 상품별로 다른 한도(예: 운전자보험 10만원)는 자동 반영되지 않으니 공지와 확인하세요.`);
       }
     }
+    // 건당 보험료 구간 사다리(20만↑ 160% / 10만↑ 80%)에서 AI가 낮은 구간 행을 '겹친다'며 안내로 돌린 경우, 계산 시책으로 되돌립니다(아래 사다리 변환이 합산을 바로잡습니다)
+    {
+      const ladderMin = r => { const m = /건당\s*(\d+(?:\.\d+)?)\s*만\s*원?\s*(?:이상|↑)/.exec(`${r.title || ''} ${r.src_text || ''}`); return m ? Math.round(parseFloat(m[1]) * 10000) : null; };
+      rules.filter(n => n.itype === 'note' && Array.isArray(n.targets) && n.targets.length && /겹치|중복|이중|제외/.test(`${n.review_note || ''} ${n.memo || ''}`)).forEach(n => {
+        const nm = ladderMin(n); const pm = /(\d+(?:\.\d+)?)\s*%/.exec(`${n.src_text || ''} ${n.title || ''}`);
+        if (!nm || !pm) return;
+        const sib = rules.find(r => r !== n && ['monthly', 'month13'].includes(r.itype) && r.min_premium && r.min_premium > nm && r.calc === 'pct' && Array.isArray(r.targets) && r.targets.length === n.targets.length && n.targets.every(t => r.targets.includes(t)) && (r.pay_offset || 0) === (n.pay_offset || r.pay_offset || 0));
+        if (!sib) return;
+        n.itype = sib.itype; n.calc = 'pct'; n.value = parseFloat(pm[1]); n.min_premium = nm; n.pay_offset = sib.pay_offset; n.start = sib.start; n.end = sib.end;
+        n.review_note = ''; n.memo = norm(`건당 ${nm / 10000}만원 이상 구간 시책(건당 ${sib.min_premium / 10000}만원 이상은 ${sib.value}% 하나만 적용)`);
+        warnings.push(`${batch.company}: 건당 보험료 구간 시책 「${String(n.title).slice(0, 30)}」을 안내에서 계산 시책으로 되돌렸습니다.`);
+      });
+    }
     // 같은 상품에 같은 종류·같은 지급시점의 시책이 둘 이상 겹치면 합산되므로 눈에 띄게 표시
     const money = rules.filter(r => ['monthly', 'weekly', 'joiner', 'month13'].includes(r.itype) && Array.isArray(r.targets));
     for (let i = 0; i < money.length; i++) {
@@ -333,15 +346,14 @@ function validate(raw, ctx) {
         // 높은 구간 시책의 지급률을 차액(상위-하위)으로 바꿔 합산해도 상위 지급률 하나가 되게 합니다
         if (a.min_premium && b.min_premium && a.min_premium !== b.min_premium && a.calc === 'pct' && b.calc === 'pct' && shared === a.targets.length && shared === b.targets.length) {
           const hi = a.min_premium > b.min_premium ? a : b, lo = hi === a ? b : a;
-          if (Number(hi.value) > Number(lo.value) && !hi.ladder) {
-            const full = Number(hi.value), diff = Math.round((full - Number(lo.value)) * 100) / 100;
-            hi.ladder = true; hi.value = diff;
-            hi.title = norm(String(hi.title || '').replace(new RegExp(`${full}\\s*%`), `${full}% (하위 구간 ${Number(lo.value)}%에 더하는 추가분 ${diff}%)`)).slice(0, 120);
-            hi.memo = norm(((hi.memo ? hi.memo + ' · ' : '') + `건당 ${hi.min_premium / 10000}만원 이상은 ${full}% 하나만 적용되는 구간입니다. 건당 ${lo.min_premium / 10000}만원 이상 ${Number(lo.value)}% 시책과 합산되므로 추가분 ${diff}%로 입력했습니다`).slice(0, 500));
-            if (hi.review_note) hi.review_note = hi.review_note.split(/\s+·\s+/).filter(x => !/겹쳐 합산/.test(x)).join(' · ');
-            lo.memo = norm(((lo.memo ? lo.memo + ' · ' : '') + `건당 ${hi.min_premium / 10000}만원 이상은 ${full}%가 되도록 추가분 ${diff}%가 더해집니다`).slice(0, 500));
+          if (Number(hi.value) > Number(lo.value) && !lo.max_premium) {
+            // 높은 구간(예: 20만원↑ 160%)이 따로 있으면 낮은 구간(10만원↑ 80%)은 그 구간 '미만'에만 적용합니다 → 두 시책이 겹치지 않고, 카드에는 원본 그대로 160%·80%로 보입니다
+            lo.max_premium = hi.min_premium;
+            lo.title = norm(String(lo.title || '').replace(/건당\s*(\d+(?:\.\d+)?)\s*만\s*원?\s*이상/, `건당 $1만원 이상 ${hi.min_premium / 10000}만원 미만`)).slice(0, 120);
+            lo.memo = norm(((lo.memo ? lo.memo + ' · ' : '') + `건당 ${hi.min_premium / 10000}만원 이상은 ${Number(hi.value)}% 시책이 적용되므로 이 시책은 ${hi.min_premium / 10000}만원 미만에만 적용`).slice(0, 500));
             if (lo.review_note) lo.review_note = lo.review_note.split(/\s+·\s+/).filter(x => !/겹쳐 합산/.test(x)).join(' · ');
-            warnings.push(`${batch.company}: 건당 보험료 구간 시책(${lo.min_premium / 10000}만원↑ ${Number(lo.value)}% / ${hi.min_premium / 10000}만원↑ ${full}%)은 높은 구간 하나만 적용되도록 상위 구간을 추가분 ${diff}%로 바꿨습니다.`);
+            if (hi.review_note) hi.review_note = hi.review_note.split(/\s+·\s+/).filter(x => !/겹쳐 합산/.test(x)).join(' · ');
+            warnings.push(`${batch.company}: 건당 보험료 구간 시책은 ${lo.min_premium / 10000}만원 이상 ${hi.min_premium / 10000}만원 미만 ${Number(lo.value)}%, ${hi.min_premium / 10000}만원 이상 ${Number(hi.value)}%로 나누어 적용합니다.`);
             continue;
           }
         }
