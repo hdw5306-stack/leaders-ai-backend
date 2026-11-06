@@ -231,10 +231,39 @@ async function toInput(buffer, filename, mimetype) {
     const f = zip.file('word/document.xml');
     if (!f) throw new Error('Word 파일 내용을 읽지 못했습니다.');
     const text = wordXmlToText(await f.async('string'));
-    if (zip.file(/word\/media\//).length && text.replace(/\s/g, '').length < 300) {
-      throw new Error('글자가 거의 없고 이미지로 된 Word 파일입니다. PDF로 저장해서 올려 주세요.');
+    const media = zip.file(/word\/media\//);
+    if (media.length) {
+      // Word 안의 그림(표를 그림으로 붙여 넣은 공지)을 문서에 나온 순서대로 꺼내 AI가 읽게 합니다
+      let imgOk = true;
+      try {
+        const relsF = zip.file('word/_rels/document.xml.rels'); const docXml = await f.async('string');
+        const rels = {}; if (relsF) { const rx = await relsF.async('string'); rx.replace(/<Relationship\b[^>]*>/g, m => { const id = /\bId="([^"]+)"/.exec(m), tg = /\bTarget="([^"]+)"/.exec(m); if (id && tg) rels[id[1]] = tg[1]; }); }
+        const order = []; docXml.replace(/r:embed="([^"]+)"/g, (m, id) => { const t = rels[id]; if (t) { const nm = 'word/' + String(t).replace(/^\.?\//, '').replace(/^\.\.\//, ''); if (!order.includes(nm)) order.push(nm); } });
+        zip.file(/word\/media\//).forEach(m => { if (!order.includes(m.name)) order.push(m.name); });
+        const { createCanvas, loadImage } = require('@napi-rs/canvas');
+        const imageParts = []; let skipped = 0;
+        for (const nm of order) {
+          const ent = zip.file(nm); if (!ent) continue;
+          if (!/\.(png|jpe?g|gif|webp|bmp)$/i.test(nm)) { skipped++; continue; }
+          const buf = await ent.async('nodebuffer'); if (buf.length < 6000) continue;   // 로고·구분선 같은 작은 그림은 건너뜀
+          const im = await loadImage(buf); const W = im.width, H = im.height; if (W < 200 || H < 120 || W / H > 6) continue;   // 회사 로고·띠 모양 머리글 그림은 건너뜀
+          const sc = W > 1800 ? 1800 / W : 1, w = Math.round(W * sc), h = Math.round(H * sc);
+          const slice = Math.round(w * 1.25), step = Math.round(slice * 0.92);
+          for (let y = 0; y < h && imageParts.length < 14; y += step) {
+            const sh = Math.min(slice, h - y), cv = createCanvas(w, sh), cx = cv.getContext('2d');
+            cx.fillStyle = '#fff'; cx.fillRect(0, 0, w, sh); cx.drawImage(im, 0, y / sc, W, sh / sc, 0, 0, w, sh);
+            imageParts.push({ type: 'input_image', image_url: 'data:image/png;base64,' + cv.toBuffer('image/png').toString('base64'), detail: 'high' });
+            if (y + sh >= h) break;
+          }
+        }
+        if (imageParts.length) {
+          if (skipped) warnings.push(`Word 안의 그림 ${skipped}개는 형식(EMF/WMF 등)을 읽을 수 없어 건너뛰었습니다. 그 그림에 시책이 있으면 PDF로 저장해 올려 주세요.`);
+          return { kind: 'docx', imageParts, text: text.slice(0, MAX_TEXT), warnings };
+        }
+      } catch (e) { imgOk = false; console.error('[시책읽기] Word 그림 추출 실패:', e.message); }
+      if (text.replace(/\s/g, '').length < 300) throw new Error('글자가 거의 없고 이미지로 된 Word 파일입니다. PDF로 저장해서 올려 주세요.');
+      if (!imgOk) warnings.push('Word 파일 안의 그림(이미지)은 읽지 못했습니다. 그림에 시책 내용이 있다면 PDF로 저장해서 다시 올려 주세요.');   // 로고뿐인 파일은 경고하지 않음
     }
-    if (zip.file(/word\/media\//).length) warnings.push('Word 파일 안의 그림(이미지)은 읽지 못했습니다. 그림에 시책 내용이 있다면 PDF로 저장해서 다시 올려 주세요.');
     return { kind: 'text', text: text.slice(0, MAX_TEXT), warnings };
   }
   if (ext === 'pptx') {
