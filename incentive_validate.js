@@ -25,6 +25,12 @@ function sequenceConfirms(tiers, text) {
   }
   return false;
 }
+// "510% (익월 160 + 13회 350)"처럼 % 기호 없이 익월·13회 뒤에 적힌 지급률도 공지의 숫자로 인정합니다
+function pctWords(t) {
+  const out = [], re = /(?:익월|13\s*(?:회차?|차월)|15\s*차월|1차년|2차년)\s*[:：]?\s*(\d+(?:\.\d+)?)(?!\s*(?:년|회|개|월|일|만))/g; let x;
+  while ((x = re.exec(String(t || '')))) out.push(parseFloat(x[1]));
+  return out;
+}
 // 공통기준에 적힌 "건당 20만원 한도" 같은 인정 한도(원)를 모읍니다.
 function capsFromText(t) {
   const set = new Set(), re = /건당\s*P?\s*(?:최대\s*)?(\d+(?:[.,]\d+)?)\s*만\s*원?\s*(?:초과|이상)?[^.\n]{0,12}?(?:한도|限|인정|까지)/g;
@@ -323,6 +329,22 @@ function validate(raw, ctx) {
         const sa = new Set(a.targets);
         const shared = b.targets.filter(t => sa.has(t)).length;
         if (!shared) continue;
+        // "20만↑ 160%, 10만↑ 80%"처럼 건당 보험료 구간별로 높은 구간 하나만 적용되는 사다리 표기: 같은 상품에 두 시책이 겹치면
+        // 높은 구간 시책의 지급률을 차액(상위-하위)으로 바꿔 합산해도 상위 지급률 하나가 되게 합니다
+        if (a.min_premium && b.min_premium && a.min_premium !== b.min_premium && a.calc === 'pct' && b.calc === 'pct' && shared === a.targets.length && shared === b.targets.length) {
+          const hi = a.min_premium > b.min_premium ? a : b, lo = hi === a ? b : a;
+          if (Number(hi.value) > Number(lo.value) && !hi.ladder) {
+            const full = Number(hi.value), diff = Math.round((full - Number(lo.value)) * 100) / 100;
+            hi.ladder = true; hi.value = diff;
+            hi.title = norm(String(hi.title || '').replace(new RegExp(`${full}\\s*%`), `${full}% (하위 구간 ${Number(lo.value)}%에 더하는 추가분 ${diff}%)`)).slice(0, 120);
+            hi.memo = norm(((hi.memo ? hi.memo + ' · ' : '') + `건당 ${hi.min_premium / 10000}만원 이상은 ${full}% 하나만 적용되는 구간입니다. 건당 ${lo.min_premium / 10000}만원 이상 ${Number(lo.value)}% 시책과 합산되므로 추가분 ${diff}%로 입력했습니다`).slice(0, 500));
+            if (hi.review_note) hi.review_note = hi.review_note.split(/\s+·\s+/).filter(x => !/겹쳐 합산/.test(x)).join(' · ');
+            lo.memo = norm(((lo.memo ? lo.memo + ' · ' : '') + `건당 ${hi.min_premium / 10000}만원 이상은 ${full}%가 되도록 추가분 ${diff}%가 더해집니다`).slice(0, 500));
+            if (lo.review_note) lo.review_note = lo.review_note.split(/\s+·\s+/).filter(x => !/겹쳐 합산/.test(x)).join(' · ');
+            warnings.push(`${batch.company}: 건당 보험료 구간 시책(${lo.min_premium / 10000}만원↑ ${Number(lo.value)}% / ${hi.min_premium / 10000}만원↑ ${full}%)은 높은 구간 하나만 적용되도록 상위 구간을 추가분 ${diff}%로 바꿨습니다.`);
+            continue;
+          }
+        }
         const msg = `같은 상품 ${shared}건에 같은 종류 시책이 둘 이상 겹쳐 합산됩니다 — 「${a.title.slice(0, 30)}」와(과) 함께 맞는지 확인`;
         addNote(b, msg); if (!a.review_note || !/겹쳐 합산/.test(a.review_note)) addNote(a, `「${b.title.slice(0, 30)}」와(과) 같은 상품이 겹쳐 합산됩니다 — 확인 필요`);
         warnings.push(`${batch.company}: ${a.title} / ${b.title} — 같은 상품 ${shared}건이 겹침`);
@@ -425,7 +447,7 @@ function auditAgainstTranscript(r, tr) {
   if (!tr) return res;
   const pairs = trPairs(tr);
   const pairSet = new Set(pairs.map(p => `${p.h}:${p.v}`)), valSet = new Set(pairs.map(p => p.v)), pctSet = new Set();
-  const grabPct = t => { const re = /(\d+(?:\.\d+)?)\s*%/g; let x; while ((x = re.exec(String(t || '')))) pctSet.add(parseFloat(x[1])); };
+  const grabPct = t => { const re = /(\d+(?:\.\d+)?)\s*%/g; let x; while ((x = re.exec(String(t || '')))) pctSet.add(parseFloat(x[1])); pctWords(t).forEach(v => pctSet.add(v)); };
   (tr.percents || []).forEach(grabPct); grabPct(tr.text); (tr.pairs || []).forEach(p => grabPct(p.value));
   const re2 = /(\d+(?:[.,]\d+)?)\s*만\s*원?\s*(?:↑|이상)\s*[:：]?\s*(\d+(?:[.,]\d+)?)\s*만/g; let y;
   while ((y = re2.exec(String(tr.text || '')))) { const h = Math.round(parseFloat(y[1].replace(/,/g, '')) * 1e4), v = Math.round(parseFloat(y[2].replace(/,/g, '')) * 1e4); pairSet.add(`${h}:${v}`); valSet.add(v); }
@@ -883,6 +905,7 @@ function crossCheck(outA, outB, tr, srcText) {
         const ps = []; String(a.src_text).replace(/(\d+(?:\.\d+)?)\s*%/g, (m, x) => { ps.push(parseFloat(x)); });
         // PDF 글자 층이 숫자를 "15 0%", "5 50%"처럼 끊어 놓은 경우(150%, 550%)도 같은 수로 인정합니다
         String(a.src_text).replace(/(?<![\d.])(\d{1,3}) (\d{1,3})\s*%/g, (m, x, y) => { ps.push(parseFloat(x + y)); });
+        pctWords(a.src_text).forEach(v => ps.push(v));
         if (ps.length && !ps.includes(Number(a.value))) msgs.push(`입력된 ${a.value}%가 인용한 공지 문구(${ps.join('·')}%)와 다릅니다`);
       }
       const au = auditAgainstTranscript(a, tr);
