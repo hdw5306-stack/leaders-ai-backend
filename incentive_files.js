@@ -93,6 +93,91 @@ function slideXmlToText(xml) {
     .replace(/<[^>]+>/g, ''))
     .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
 }
+// ── PowerPoint: 도형(글상자·표·묶음)의 위치를 반영해 읽기 ──
+// 슬라이드 XML 의 도형 순서는 화면 위치와 무관합니다. 그냥 이어 붙이면 "7년~12년납" 같은 납입기간 라벨이 엉뚱한 표 행에 붙어 읽힙니다.
+// 그래서 모든 도형의 위치(EMU)를 계산해서, 표 위에 겹쳐 놓인 라벨은 그 표의 해당 행에 넣고 나머지는 위→아래, 왼→오른 순서로 정렬합니다.
+function xmlTree(xml) {
+  const root = { tag: '#root', attrs: '', kids: [], text: '' }; const st = [root];
+  const re = /<(\/?)([\w:.-]+)([^>]*?)(\/?)>|([^<]+)/g; let m;
+  while ((m = re.exec(xml))) {
+    if (m[5] != null) { st[st.length - 1].text += m[5]; continue; }
+    if (m[1]) { if (st.length > 1) st.pop(); continue; }
+    const n = { tag: m[2], attrs: m[3] || '', kids: [], text: '' };
+    st[st.length - 1].kids.push(n); if (!m[4]) st.push(n);
+  }
+  return root;
+}
+const kid = (n, tag) => n.kids.find(k => k.tag === tag);
+const attr = (n, a) => { const x = n && new RegExp('\\b' + a + '="(-?\\d+)"').exec(n.attrs); return x ? Number(x[1]) : null; };
+function nodeText(n) {   // 문단 단위 글자
+  const out = [];
+  (function walk(x) {
+    if (x.tag === 'a:p') { let t = ''; (function w2(y) { if (y.tag === 'a:t') t += decodeXml(y.text); else if (y.tag === 'a:br') t += ' '; else y.kids.forEach(w2); })(x); if (t.trim()) out.push(t.trim()); return; }
+    x.kids.forEach(walk);
+  })(n);
+  return out.join(' ');
+}
+function slideShapes(xml) {
+  const tree = xmlTree(xml); const items = [];
+  const spTree = (function find(n) { if (n.tag === 'p:spTree') return n; for (const k of n.kids) { const r = find(k); if (r) return r; } return null; })(tree);
+  if (!spTree) return null;
+  // 묶음(grpSp)의 좌표 변환
+  const walk = (node, tf) => {
+    node.kids.forEach(ch => {
+      if (ch.tag === 'p:grpSp') {
+        const x = kid(kid(ch, 'p:grpSpPr') || { kids: [] }, 'a:xfrm');
+        if (!x) return walk(ch, tf);
+        const off = kid(x, 'a:off'), ext = kid(x, 'a:ext'), cho = kid(x, 'a:chOff'), che = kid(x, 'a:chExt');
+        const ox = attr(off, 'x') || 0, oy = attr(off, 'y') || 0, ex = attr(ext, 'cx') || 1, ey = attr(ext, 'cy') || 1;
+        const cx = attr(cho, 'x') || 0, cy = attr(cho, 'y') || 0, cex = attr(che, 'cx') || ex, cey = attr(che, 'cy') || ey;
+        const sx = ex / cex, sy = ey / cey;
+        const t2 = { map: (x0, y0) => tf.map(ox + (x0 - cx) * sx, oy + (y0 - cy) * sy), sx: tf.sx * sx, sy: tf.sy * sy };
+        return walk(ch, t2);
+      }
+      if (ch.tag === 'p:sp' || ch.tag === 'p:graphicFrame') {
+        const x = ch.tag === 'p:sp' ? kid(kid(ch, 'p:spPr') || { kids: [] }, 'a:xfrm') : kid(ch, 'p:xfrm');
+        const off = x && kid(x, 'a:off'), ext = x && kid(x, 'a:ext');
+        const px = attr(off, 'x'), py = attr(off, 'y'); if (px == null || py == null) { items.push({ x: null, y: null, ch }); return; }
+        const [ax, ay] = tf.map(px, py);
+        items.push({ x: ax, y: ay, w: (attr(ext, 'cx') || 0) * tf.sx, h: (attr(ext, 'cy') || 0) * tf.sy, ch, sy: tf.sy });
+      }
+    });
+  };
+  walk(spTree, { map: (a, b) => [a, b], sx: 1, sy: 1 });
+  return items;
+}
+function slideXmlToTextPositioned(xml) {
+  const items = slideShapes(xml); if (!items || !items.length) return null;
+  const tables = [], boxes = [];
+  items.forEach(it => {
+    if (it.ch.tag === 'p:graphicFrame') {
+      const tbl = (function f(n) { if (n.tag === 'a:tbl') return n; for (const k of n.kids) { const r = f(k); if (r) return r; } return null; })(it.ch);
+      if (!tbl) return;
+      let y = it.y; const rows = [];
+      tbl.kids.filter(k => k.tag === 'a:tr').forEach(tr => {
+        const h = (attr(tr, 'h') || 0) * (it.sy || 1);
+        const cells = tr.kids.filter(k => k.tag === 'a:tc').map(tc => nodeText(tc));
+        rows.push({ y0: y, y1: y + h, cells, labels: [] }); y += h;
+      });
+      tables.push({ x0: it.x, x1: it.x + it.w, y0: it.y, y1: y, rows });
+    } else {
+      const t = nodeText(it.ch); if (t) boxes.push({ x: it.x, y: it.y, w: it.w, h: it.h, t });
+    }
+  });
+  const rest = [];
+  boxes.forEach(b => {
+    if (b.x == null) { rest.push(b); return; }
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    const tb = tables.find(t => cx >= t.x0 && cx <= t.x1 && cy >= t.y0 && cy <= t.y1);
+    const row = tb && tb.rows.find(r => cy >= r.y0 && cy <= r.y1);
+    if (row) row.labels.push(b); else rest.push(b);
+  });
+  const out = [];
+  tables.forEach(t => t.rows.forEach(r => out.push({ y: r.y0, x: t.x0, t: (r.cells.join(' | ') + (r.labels.length ? '   ◀ 이 행에 겹쳐 적힌 라벨: ' + r.labels.sort((a, b) => a.x - b.x).map(l => `[${l.t}]`).join(' ') : '')).trim() })));
+  rest.forEach(b => out.push({ y: b.y == null ? 1e15 : b.y, x: b.x || 0, t: b.t }));
+  out.sort((a, b) => (Math.abs(a.y - b.y) > 90000 ? a.y - b.y : a.x - b.x));
+  return out.map(o => o.t).filter(Boolean).join('\n');
+}
 function hwpxXmlToText(xml) {
   return decodeXml(xml
     .replace(/<\/hp:p>\s*<\/hp:subList>\s*(?:<hp:cellAddr[^>]*\/>\s*)?(?:<hp:cellSpan[^>]*\/>\s*)?(?:<hp:cellSz[^>]*\/>\s*)?(?:<hp:cellMargin[^>]*\/>\s*)?<\/hp:tc>/g, ' | ').replace(/<\/hp:tc>/g, ' | ')
@@ -154,7 +239,9 @@ async function toInput(buffer, filename, mimetype) {
     let text = '', emptyWithPic = 0;
     for (const s of slides) {
       const xml = await s.async('string');
-      const t = slideXmlToText(xml).trim();
+      let t = '';
+      try { t = (slideXmlToTextPositioned(xml) || '').trim(); } catch (e) { console.error('[시책읽기] 슬라이드 위치 분석 실패 → 기본 방식:', e.message); }
+      if (!t) t = slideXmlToText(xml).trim();
       if (!t && /<p:pic>/.test(xml)) emptyWithPic++;
       text += `\n=== 슬라이드 ${num(s.name)} ===\n${t}\n`;
     }
