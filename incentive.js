@@ -129,6 +129,39 @@ async function callAI({ system, content, maxOutput, rotate }) {
   throw new Error('AI 서비스 호출에 실패했습니다. ' + lastErr.slice(0, 200));
 }
 
+
+// ── 시책 표가 없는 쪽(여행·행사 홍보 그림 등)은 읽지 않고 건너뜁니다 ──
+// 쪽마다 작은 그림으로 값싼 모델에 "현금 지급률·조건 표가 있는 쪽인가, 홍보 그림 쪽인가"를 물어 홍보 쪽만 뺍니다.
+// 판정이 실패하거나 모호하면 그 쪽은 반드시 읽습니다(빠뜨림 방지). 첫 쪽과 글자 층이 충분한 쪽은 항상 읽습니다.
+async function prunePages(input, warnings) {
+  try {
+    const pi = input && input.pageInfo; if (!pi || pi.length < 2 || !input.imageParts || !process.env.OPENAI_API_KEY) return;
+    const model = process.env.INCENTIVE_TRIAGE_MODEL || 'gpt-4.1-mini';
+    const verdicts = await Promise.all(pi.map(async (pg, idx) => {
+      if (idx === 0 || !pg.thumb || (pg.text || '').replace(/\s/g, '').length > 400) return 'keep';
+      try {
+        const r = await fetch(`${OPENAI_BASE}/v1/responses`, {
+          method: 'POST', headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, instructions: '보험사 시책 공지의 한 쪽을 분류합니다. json 만 출력합니다.',
+            input: [{ role: 'user', content: [
+              { type: 'input_text', text: '이 쪽을 분류하세요. {"kind":"table"|"promo"} 형식의 json 으로만 답하세요.\n- table: 현금 시책 지급률(%)·금액 구간표·지급/제외/환수 조건표·상품별 시책표가 있는 쪽, 또는 판단이 어려운 쪽.\n- promo: 해외여행·물품·행사 홍보 사진/포스터 위주이고 현금 지급률 표가 없는 쪽.' },
+              { type: 'input_image', image_url: pg.thumb, detail: 'low' }] }],
+            text: { format: { type: 'json_object' } }, max_output_tokens: 200 }),
+        });
+        if (!r.ok) return 'keep';
+        const d = await r.json(); const t = extractText(d);
+        return /"kind"\s*:\s*"promo"/.test(t || '') ? 'promo' : 'keep';
+      } catch (e) { return 'keep'; }
+    }));
+    const drop = pi.filter((pg, k) => verdicts[k] === 'promo');
+    if (!drop.length || drop.length >= pi.length) return;
+    const keep = pi.filter(pg => !drop.includes(pg));
+    const imgs = []; let txt = '';
+    keep.forEach(pg => { input.imageParts.slice(pg.from, pg.to).forEach(x => imgs.push(x)); txt += pg.text || ''; });
+    input.imageParts = imgs; input.text = txt.trim();
+    warnings.push(`PDF ${drop.map(d => d.i).join('·')}쪽은 시책 지급률 표가 없는 홍보 그림(여행·행사 안내 등)으로 판단해 읽지 않았습니다. 그 쪽에 현금 시책 조건이 있는지 원본에서 한 번 확인하세요.`);
+  } catch (e) { console.error('[시책읽기] 쪽 분류 실패 → 전체 읽기:', e.message); }
+}
 // ── 단계별 처리 ──────────────────────────────────────────────
 async function runIdentify(file, companies) {
   const input = await toInput(file.buffer, file.filename, file.mimetype);
@@ -144,6 +177,7 @@ async function runIdentify(file, companies) {
 
 async function runExtract(file, products, nonlife, force) {
   const input = await toInput(file.buffer, file.filename, file.mimetype);
+  await prunePages(input, input.warnings);
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' });
   const base = userPrompt({ filename: file.filename, today, products, nonlife, fileText: input.text });
   const mk = (extra) => {

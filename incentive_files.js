@@ -27,10 +27,12 @@ async function rasterizePdf(buffer) {
     destroy(cc) { cc.canvas.width = 0; cc.canvas.height = 0; cc.canvas = null; cc.context = null; }
   }
   const doc = await pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true, isEvalSupported: false, disableFontFace: true, verbosity: 0, canvasFactory: new NapiCanvasFactory(), CanvasFactory: NapiCanvasFactory }).promise;
-  const images = []; let text = '';
+  const images = []; let text = ''; const pageInfo = [];
   const n = Math.min(doc.numPages, MAX_PDF_PAGES);
   for (let i = 1; i <= n; i++) {
     const page = await doc.getPage(i);
+    const pi = { i, from: images.length, to: images.length, text: '', thumb: null }; pageInfo.push(pi);
+    const textBefore = text.length;
     try {
       const tc = await page.getTextContent();
       const line = tc.items.map(x => x.str).join(' ').replace(/\s+/g, ' ').trim();
@@ -61,10 +63,12 @@ async function rasterizePdf(buffer) {
       images.push({ type: 'input_image', image_url: 'data:image/png;base64,' + c2.toBuffer('image/png').toString('base64'), detail: 'high' });
       images.push({ type: 'input_text', text: `(위 그림: ${i}쪽 ${slices.length > 1 ? `확대 ${k + 1}/${slices.length}번째 띠 — 띠 경계에서 표가 이어질 수 있고 위아래 일부가 겹칩니다` : '전체'})` });
     });
+    pi.to = images.length; pi.text = text.slice(textBefore);
+    try { const tw = 560, th = Math.max(1, Math.round(h * tw / w)), ct = createCanvas(tw, th); ct.getContext('2d').drawImage(cv, 0, 0, w, h, 0, 0, tw, th); pi.thumb = 'data:image/png;base64,' + ct.toBuffer('image/png').toString('base64'); } catch (e) { /* 쪽 분류 없이 진행 */ }
     page.cleanup();
   }
   const pages = doc.numPages; await doc.destroy();
-  return { images, text: text.trim(), pages };
+  return { images, text: text.trim(), pages, pageInfo };
 }
 
 function decodeXml(s) {
@@ -203,7 +207,7 @@ async function toInput(buffer, filename, mimetype) {
       const r = await rasterizePdf(buffer);
       if (r && r.images.length) {
         if (r.pages > MAX_PDF_PAGES) warnings.push(`PDF가 ${r.pages}쪽이라 앞 ${MAX_PDF_PAGES}쪽만 그림으로 읽었습니다. 나머지는 파일 본문으로만 읽으니 나누어 올리면 더 정확합니다.`);
-        return { kind: 'pdf', filePart: r.pages > MAX_PDF_PAGES ? filePart : null, imageParts: r.images, text: r.text, warnings };
+        return { kind: 'pdf', filePart: r.pages > MAX_PDF_PAGES ? filePart : null, imageParts: r.images, text: r.text, warnings, pageInfo: r.pageInfo };
       }
     } catch (e) { console.error('[시책읽기] PDF 그림 변환 실패 → 파일 그대로 첨부:', e.message); why = String(e.message || e).replace(/\s+/g, ' ').slice(0, 140); }
     warnings.push('PDF를 그림으로 바꾸지 못해 파일 그대로 읽었습니다(정확도가 낮을 수 있습니다).' + (why ? ' 원인: ' + why : ''));
