@@ -89,6 +89,16 @@ function applyMinFromConds(r, tr) {
   for (const c0 of tr.conds) {
     const c = String(c0 || ''), mp = minpFrom(c); if (!mp) continue;
     const keys = COND_KEYS.filter(k => c.includes(k)); if (keys.length && !keys.some(k => rt.includes(k))) continue;
+    // 다른 시상(다건 시상·보너스·출시기념·특별시상 등)에 딸린 최소 보험료 문구는 그 시상의 이름이 시책 제목에 있을 때만 적용합니다
+    const SEC = /다건|보너스|특약\s*활성|출시\s*기념|특별\s*시상|전략|기관장/;
+    if (SEC.test(c) && !SEC.test(rt)) continue;
+    // "보험료 3만원 이상 건에 한함"처럼 표 머리글이 아닌 문장형 조건은, 문장 안에 이 시책의 상품명(제목의 낱말)이 실제로 있을 때만 적용합니다
+    // ("건강" 같은 넓은 낱말만 겹쳐서 다른 상품에 붙는 것을 막습니다)
+    const mm = MINP_RE.exec(c);
+    if (mm && mm[3] != null) {
+      const words = String(r.title || '').split(/[\s,·]+/).filter(w => w.length >= 4 && !/^\d/.test(w) && !/(년납|익월|13회차|시상|시책)$/.test(w));
+      if (!words.some(w => c.includes(w))) continue;
+    }
     if (!keys.length && simil(r.title, c) < 0.2) continue;
     if (c.includes('추가') && !rt.includes('추가')) continue;
     if (c.includes('기본') && !c.includes('추가') && !rt.includes('기본')) continue;
