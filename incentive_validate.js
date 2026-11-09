@@ -139,7 +139,9 @@ function applyScopedCaps(rules, trText, company, warnings) {
 const sqLow = x => squash(x).toLowerCase().replace(/[()\[\]·,.\-_]/g, '');
 function periodBucket(label) {
   const t = squash(label);
-  let m = t.match(/(\d+)-(\d+)년(?!납)/); if (m) return { lo: +m[1], hi: +m[2] };
+  let m = t.match(/(\d+)년이상(\d+)년미만납?/); if (m) return { lo: +m[1], hi: +m[2] - 1 };
+  m = t.match(/(\d+)년이상납?/); if (m) return { lo: +m[1], hi: 99 };
+  m = t.match(/(\d+)-(\d+)년(?!납)/); if (m) return { lo: +m[1], hi: +m[2] };
   m = t.match(/(\d+)년초과/); if (m) return { lo: +m[1] + 1, hi: 99 };
   m = t.match(/(\d+)년납/); if (m) return m[0].includes('초과') ? { lo: +m[1] + 1, hi: 99 } : { lo: +m[1], hi: +m[1] };
   m = t.match(/(\d+)년$/); if (m) return { lo: +m[1], hi: +m[1] };
@@ -147,7 +149,7 @@ function periodBucket(label) {
 }
 function rescueTargets(r, labels) {
   const title = norm(r.title);
-  const m = title.match(/^(.+?)\s+((?:납기\s*무관|\d+\s*년\s*납?)(?:\s*[·,/]\s*\d+\s*년\s*납?)*(?:\s*(?:이상|미만|이하|초과))?)\s+(익월|익익월|\d+\s*차월|\d+\s*차년도)\s+(\d+(?:\.\d+)?)\s*%$/);
+  const m = title.match(/^(.+?)\s+((?:납기\s*무관|\d+\s*년\s*납?)(?:\s*[·,/]\s*\d+\s*년\s*납?)*(?:\s*(?:이상|미만|이하|초과))?)\s+(익월|익익월|\d+\s*차월|\d+\s*회|\d+\s*차년도)\s+(\d+(?:\.\d+)?)\s*%$/);
   if (!m) return null;
   const prodPart = m[1], per = m[2], when = m[3], pct = Number(m[4]);
   const toks = prodPart.split(/[\/·,]/).map(x => sqLow(x)).filter(x => x.length >= 2);
@@ -157,7 +159,12 @@ function rescueTargets(r, labels) {
   // '간편가입 X'는 수수료표에 'X … 간편심사형'(또는 '간편가입 X')으로 적힌 같은 상품입니다. 간편 표기가 없으면 간편 상품은 뺍니다.
   const hitsByTok = toks.map(t => {
     const simple = t.startsWith('간편가입'), core = simple ? t.slice(4) : t;
-    return labels.filter(l => { const sq = squash(l); const f = families.get(l); if (!f.includes(core)) return false; const isSimple = /간편가입|간편심사/.test(sq); return simple ? isSimple : !isSimple; });
+    const pick = (match) => labels.filter(l => { const sq = squash(l); if (!match(families.get(l))) return false; const isSimple = /간편가입|간편심사/.test(sq); return simple ? isSimple : !isSimple; });
+    const exact = pick(f => f.includes(core));
+    if (exact.length) return exact;
+    // 영문 한 글자 차이(예: 공지 '경영인정기' ↔ 라벨 '경영인H정기보험')는 영문을 뺀 이름으로 한 번 더 찾습니다
+    const core2 = core.replace(/[a-z]/g, '');
+    return core2.length >= 3 ? pick(f => f.replace(/[a-z]/g, '').includes(core2)) : [];
   });
   if (hitsByTok.some(h => !h.length)) return null;
   let picked = [].concat(...hitsByTok);
@@ -177,6 +184,8 @@ function rescueTargets(r, labels) {
       return nums.some(x => b.lo <= x && x <= b.hi);
     });
   }
+  // 수수료표 라벨에 납입기간 구분이 전혀 없는 상품(전기납 등)이면 납입기간 조건은 보지 않고 상품 전체를 연결합니다
+  if (!ok.length && picked.length && picked.every(l => !periodBucket(l))) ok = picked;
   if (!ok.length) return null;
   let off = when === '익월' ? 1 : when === '익익월' ? 2 : Number((when.match(/\d+/) || [1])[0]);
   if (/차년도/.test(when)) { const mm = `${r.memo || ''} ${r.src_text || ''}`.match(/(\d+)\s*회/); off = mm ? Number(mm[1]) : 13; }
