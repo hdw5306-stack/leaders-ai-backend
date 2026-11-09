@@ -222,7 +222,11 @@ function applyRestOfProducts(rules, labels, company, warnings) {
       const f = sqLow(String(l).replace(/\([^)]*\)/g, '').replace(/\s{2,}.*$/, '')), g = sqLow(String(l).replace(/\([^)]*\)/g, ''));
       return !excl.some(e => f.includes(e) || g.includes(e));
     });
-    if (!rest.length) return;
+    if (!rest.length) {
+      r.review_note = undefined;
+      addNote(r, `나머지 보장성 상품을 수수료표에서 찾아 보았으나, 다른 시책에 이미 들어갔거나 제외 상품이어서 남은 상품이 없습니다(수수료표 상품 ${labels.length}개 중 다른 시책 대상 ${covered.size}개) — 계산할 상품 없음`);
+      return;
+    }
     r.itype = 'monthly'; r.calc = 'pct'; r.value = Number(pm[1]); r.pay_offset = /익익월/.test(`${r.title}${r.src_text}`) ? 2 : 1;
     r.targets = rest; r.review_note = undefined;
     addNote(r, `공지에 나열되지 않은 나머지 보장성 상품으로, 프로그램이 수수료표에서 ${rest.length}개 라벨을 골라 연결했습니다(다른 시책 대상·연금저축·공지의 제외 상품 뺌) — '대상 상품' 목록을 확인해 주세요`);
@@ -982,6 +986,9 @@ function reconcileProducts(rules, trProducts, company, warnings) {
 
 function crossCheck(outA, outB, tr, srcText) {
   const warnings = [];
+  // 확인용 근거 글: AI 가 옮겨 적은 글(transcript)에 더해, 파일에서 직접 뽑은 원문(PPT·워드·엑셀 등)도 함께 봅니다.
+  // 옮겨 적기가 표의 일부를 놓쳐도 원문에 그 숫자가 있으면 틀렸다고 하지 않기 위해서입니다.
+  const trE = (tr || (srcText && String(srcText).trim())) ? Object.assign({ percents: [], pairs: [] }, tr || {}, { text: String((tr && tr.text) || '') + '\n' + String(srcText || '') }) : tr;
   let total = 0, agreed = 0, flagged = 0;
   const money = r => r.itype !== 'note' && r.itype !== 'goods';
   const pickB = (a, pool, used) => {
@@ -1074,7 +1081,7 @@ function crossCheck(outA, outB, tr, srcText) {
         pctWords(a.src_text).forEach(v => ps.push(v));
         if (ps.length && !ps.includes(Number(a.value))) msgs.push(`입력된 ${a.value}%가 인용한 공지 문구(${ps.join('·')}%)와 다릅니다`);
       }
-      const au = auditAgainstTranscript(a, tr);
+      const au = auditAgainstTranscript(a, trE);
       // 옮겨 적기에서 짝을 못 찾았을 뿐 틀렸다는 증거가 없고, 시책이 인용한 공지 문구(src_text)의 구간·금액 짝이 모두 일치하면 믿습니다
       if (au.msgs.length && a.itype === 'tier' && au.msgs.every(m => /짝을 찾지 못/.test(m)) && (a.tiers || []).length) {
         const pr = pairsFromText(a.src_text);
@@ -1082,7 +1089,7 @@ function crossCheck(outA, outB, tr, srcText) {
         if (pr.size >= 2 && own.length && own.every(t => pr.get(t.min) === t.pay)) au.msgs.length = 0;
         else if (sequenceConfirms(a.tiers, a.src_text)) au.msgs.length = 0;
       }
-      const bAudit = bestB ? auditAgainstTranscript(bestB, tr) : { msgs: ['-'], specific: false };
+      const bAudit = bestB ? auditAgainstTranscript(bestB, trE) : { msgs: ['-'], specific: false };
       if (au.specific && !au.msgs.length) {
         msgs.length = 0; // 공지의 해당 표와 한 칸씩 일치 — 두 번째 읽기와 달라도 신뢰
       } else {
