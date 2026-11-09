@@ -192,6 +192,44 @@ function rescueTargets(r, labels) {
   return { targets: ok, pct, off, month13: off >= 13 };
 }
 
+// "상기외 보장성 익월 80%"처럼 표에 나열되지 않은 '나머지 상품'을 뜻하는 시책: 같은 공지의 다른 시책 대상에 들어가지 않은 수수료표 상품 중
+// 보장성 상품(연금·저축 제외, 공지가 '모든 프로모션에서 제외'한다고 적은 상품 제외)을 프로그램이 직접 골라 연결합니다.
+const REST_RE = /상기\s*외|표\s*(?:에\s*)?(?:열거|나열|적힌|기재)된?\s*(?:상품|보험)?\s*외|열거되지\s*않은|그\s*외\s*보장성/;
+function excludedNamesFromNotes(rules) {
+  const names = [];
+  rules.forEach(r => {
+    const t = String(r.src_text || '') + ' ' + String(r.memo || '');
+    const re = /([^□■※\n.]{2,200}?)(?:은|는)\s*(?:[가-힣\s]{0,12})?(?:모든\s*(?:프로모션|시책)(?:에서)?|전\s*시책(?:에서)?)\s*(?:산출\s*)?제외/g; let m;
+    while ((m = re.exec(t))) m[1].split(/[,，、·\/]/).forEach(x => { const n = x.replace(/\([^)]*\)/g, '').replace(/\s+/g, '').replace(/(?:등|및)$/, ''); if (n.length >= 3) names.push(sqLow(n)); });
+  });
+  return Array.from(new Set(names));
+}
+function applyRestOfProducts(rules, labels, company, warnings) {
+  if (!labels || !labels.length) return;
+  rules.forEach(r => {
+    if (r.itype !== 'note' || (Array.isArray(r.targets) && r.targets.length)) return;
+    if (!REST_RE.test(`${r.title || ''} ${r.src_text || ''}`)) return;
+    const pm = /(\d+(?:\.\d+)?)\s*%/.exec(`${r.title || ''}`) || /(\d+(?:\.\d+)?)\s*%/.exec(String(r.src_text || ''));
+    if (!pm) return;
+    const covered = new Set();
+    rules.forEach(x => { if (x !== r && x.itype !== 'note' && x.itype !== 'goods' && Array.isArray(x.targets)) x.targets.forEach(t => covered.add(t)); });
+    const excl = excludedNamesFromNotes(rules);
+    const rest = labels.filter(l => {
+      if (covered.has(l)) return false;
+      // 보장성 상품만: 저축·연금·투자·적립·교육 성격은 빼고, 보장(종신·정기·건강·암·치매·간병·상해·질병·통합 등) 성격의 이름이 있는 상품만 남깁니다
+      if (/연금|저축|펀드|변액|적립|교육|학자금|양로|목돈|이자|금리연동|유니버셜/.test(l)) return false;
+      if (!/종신|정기|건강|암|치매|간병|질병|상해|통합|보장|치아|어린이|유병자|사망|CI|입원|수술|재해/i.test(l)) return false;
+      const f = sqLow(String(l).replace(/\([^)]*\)/g, '').replace(/\s{2,}.*$/, '')), g = sqLow(String(l).replace(/\([^)]*\)/g, ''));
+      return !excl.some(e => f.includes(e) || g.includes(e));
+    });
+    if (!rest.length) return;
+    r.itype = 'monthly'; r.calc = 'pct'; r.value = Number(pm[1]); r.pay_offset = /익익월/.test(`${r.title}${r.src_text}`) ? 2 : 1;
+    r.targets = rest; r.review_note = undefined;
+    addNote(r, `공지에 나열되지 않은 나머지 보장성 상품으로, 프로그램이 수수료표에서 ${rest.length}개 라벨을 골라 연결했습니다(다른 시책 대상·연금저축·공지의 제외 상품 뺌) — '대상 상품' 목록을 확인해 주세요`);
+    warnings.push(`${company}: '${String(r.title).slice(0, 24)}' — 나머지 보장성 상품 ${rest.length}개를 프로그램이 골라 연결했습니다(확인 필요)`);
+  });
+}
+
 function validate(raw, ctx) {
   const warnings = [];
   const products = ctx.products || {};
@@ -404,6 +442,7 @@ function validate(raw, ctx) {
         warnings.push(`${batch.company}: 건당 보험료 구간 시책 「${String(n.title).slice(0, 30)}」을 안내에서 계산 시책으로 되돌렸습니다.`);
       });
     }
+    if (batch.grp === 'life') applyRestOfProducts(rules, labels, batch.company, warnings);
     // 같은 상품에 같은 종류·같은 지급시점의 시책이 둘 이상 겹치면 합산되므로 눈에 띄게 표시
     const money = rules.filter(r => ['monthly', 'weekly', 'joiner', 'month13'].includes(r.itype) && Array.isArray(r.targets));
     for (let i = 0; i < money.length; i++) {
@@ -426,6 +465,27 @@ function validate(raw, ctx) {
             if (lo.review_note) lo.review_note = lo.review_note.split(/\s+·\s+/).filter(x => !/겹쳐 합산/.test(x)).join(' · ');
             if (hi.review_note) hi.review_note = hi.review_note.split(/\s+·\s+/).filter(x => !/겹쳐 합산/.test(x)).join(' · ');
             warnings.push(`${batch.company}: 건당 보험료 구간 시책은 ${lo.min_premium / 10000}만원 이상 ${hi.min_premium / 10000}만원 미만 ${Number(lo.value)}%, ${hi.min_premium / 10000}만원 이상 ${Number(hi.value)}%로 나누어 적용합니다.`);
+            continue;
+          }
+        }
+        // 한쪽에만 건당 최소 보험료가 있는 사다리(예: 5·7년납 400% / 5년납 건당 150만원↑ 450%): 높은 쪽 상품은 낮은 시책을 '미만'으로 한정하고,
+        // 낮은 시책에만 있는 상품(7년납)은 그대로 둡니다 → 어느 계약도 두 시책이 겹쳐 합산되지 않습니다.
+        if (a.calc === 'pct' && b.calc === 'pct' && !!a.min_premium !== !!b.min_premium) {
+          const hi = a.min_premium ? a : b, lo = hi === a ? b : a;
+          const inLo = new Set(lo.targets);
+          if (Number(hi.value) > Number(lo.value) && !lo.max_premium && hi.targets.every(t => inLo.has(t))) {
+            const hiSet = new Set(hi.targets), mp = hi.min_premium, mpTxt = `${mp / 10000}만원`;
+            const note = `건당 ${mpTxt} 이상은 「${String(hi.title).slice(0, 24)}」 ${Number(hi.value)}%가 적용되므로 이 시책은 ${mpTxt} 미만에만 적용`;
+            const rest = lo.targets.filter(t => !hiSet.has(t));
+            if (rest.length) {
+              const part = Object.assign({}, lo, { targets: lo.targets.filter(t => hiSet.has(t)), max_premium: mp, title: norm(`${lo.title} (건당 ${mpTxt} 미만)`).slice(0, 120), memo: norm(((lo.memo ? lo.memo + ' · ' : '') + note).slice(0, 500)) });
+              lo.targets = rest;
+              rules.splice(rules.indexOf(lo) + 1, 0, part);
+            } else {
+              lo.max_premium = mp; lo.title = norm(`${lo.title} (건당 ${mpTxt} 미만)`).slice(0, 120); lo.memo = norm(((lo.memo ? lo.memo + ' · ' : '') + note).slice(0, 500));
+            }
+            [lo, hi].forEach(x => { if (x.review_note) x.review_note = x.review_note.split(/\s+·\s+/).filter(y => !/겹쳐 합산|중복 지급하지 않/.test(y)).join(' · ') || undefined; });
+            warnings.push(`${batch.company}: 건당 보험료 구간 시책은 ${mpTxt} 미만 ${Number(lo.value)}%, ${mpTxt} 이상 ${Number(hi.value)}%로 나누어 적용합니다.`);
             continue;
           }
         }
@@ -526,6 +586,14 @@ function tableSpecific(r, pairs) {
   return best && best.length >= 2 ? best : null;
 }
 // 반환: { msgs: [...], specific: 표를 정확히 찾아 대조했는지 }
+// 글 속에 금액이 "5만", "5만원", "50,000", "50000" 어느 모양으로든 적혀 있는지(앞뒤가 다른 숫자에 붙어 있지 않게)
+function moneyIn(text, won) {
+  const v = Math.round(Number(won) || 0); if (v <= 0) return false;
+  const forms = [];
+  if (v % 10000 === 0) forms.push(String(v / 10000) + '\\s*만');
+  forms.push(v.toLocaleString('en-US').replace(/,/g, ',?'));
+  return forms.some(f => new RegExp('(^|[^0-9.,])' + f + '(?![0-9])').test(String(text || '')));
+}
 function auditAgainstTranscript(r, tr) {
   const res = { msgs: [], specific: false };
   if (!tr) return res;
@@ -548,6 +616,12 @@ function auditAgainstTranscript(r, tr) {
     const useSet = spec ? new Set(spec.map(p => `${p.h}:${p.v}`)) : pairSet;
     res.specific = !!spec;
     let bad = r.tiers.filter(t => !t.prev && !useSet.has(`${t.min}:${t.pay}`));
+    // 표 모양과 무관한 최후 확인: 구간이 1~2개뿐인 작은 표(예: "5만 이상 시 / 지급액 10만")는 열이 밀릴 위험이 없으므로,
+    // 기준 금액과 시상금 두 숫자가 모두 공지 원문에 적혀 있으면 짝이 맞는 것으로 봅니다(공지에 없는 숫자는 그대로 걸립니다).
+    if (bad.length && r.tiers.filter(t => !t.prev).length <= 2) {
+      const blob = [String(tr.text || '')].concat((tr.pairs || []).map(p => `${p.h == null ? '' : p.h} ${p.value == null ? '' : p.value}`)).join(' \n ');
+      bad = bad.filter(t => !(moneyIn(blob, t.min) && moneyIn(blob, t.pay)));
+    }
     if (bad.length && (sequenceConfirms(r.tiers, tr.text) || sequenceConfirms(r.tiers, (tr.pairs || []).map(p => `${p.h == null ? '' : p.h} ${p.value == null ? '' : p.value}`).join(' ')))) bad = [];
     // 합쳐진 칸이 있는 표는 옮겨 적기가 일부 칸을 빠뜨릴 수 있습니다. 일부 칸은 확인되고 나머지는 시책이 인용한 공지 문구(src_text)에 그대로 적혀 있으면 문제 삼지 않습니다.
     const prevTiers = r.tiers.filter(t => t.prev);
