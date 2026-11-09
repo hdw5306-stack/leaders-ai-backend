@@ -133,6 +133,56 @@ function applyScopedCaps(rules, trText, company, warnings) {
     warnings.push(`${company}: 공지의 ‘입금보험료 ${m[1]}만원 이상 건 ${m[2]}만원 한도’를 인보험 시책 ${n}건에 적용했습니다.` + (ex ? ' 다만 온가족든든·치아·운전자보험은 더 낮은 한도(공지 참조)가 따로 있어 자동 반영되지 않습니다 — 해당 상품 계약은 보험료를 그 한도로 입력해 보세요.' : ''));
   }
 }
+
+// AI가 "수수료표에서 대응 상품을 찾지 못함"으로 안내(note)로 내린 시책 중, 제목이 "상품 / 납입기간 / 익월·13차월 N%" 꼴로 단순한 것은
+// 프로그램이 상품 이름과 납입기간으로 직접 라벨을 찾아 연결합니다(이름이 긴 보험사 대비). 모든 상품 이름이 라벨에서 확인될 때만 연결합니다.
+const sqLow = x => squash(x).toLowerCase().replace(/[()\[\]·,.\-_]/g, '');
+function periodBucket(label) {
+  const t = squash(label);
+  let m = t.match(/(\d+)-(\d+)년(?!납)/); if (m) return { lo: +m[1], hi: +m[2] };
+  m = t.match(/(\d+)년초과/); if (m) return { lo: +m[1] + 1, hi: 99 };
+  m = t.match(/(\d+)년납/); if (m) return m[0].includes('초과') ? { lo: +m[1] + 1, hi: 99 } : { lo: +m[1], hi: +m[1] };
+  m = t.match(/(\d+)년$/); if (m) return { lo: +m[1], hi: +m[1] };
+  return null;
+}
+function rescueTargets(r, labels) {
+  const title = norm(r.title);
+  const m = title.match(/^(.+?)\s+((?:납기\s*무관|\d+\s*년\s*납?)(?:\s*[·,/]\s*\d+\s*년\s*납?)*(?:\s*(?:이상|미만|이하|초과))?)\s+(익월|익익월|\d+\s*차월|\d+\s*차년도)\s+(\d+(?:\.\d+)?)\s*%$/);
+  if (!m) return null;
+  const prodPart = m[1], per = m[2], when = m[3], pct = Number(m[4]);
+  const toks = prodPart.split(/[\/·,]/).map(x => sqLow(x)).filter(x => x.length >= 2);
+  if (!toks.length) return null;
+  const families = new Map();
+  labels.forEach(l => { const name = sqLow(String(l).replace(/\s{2,}.*$/, '')); families.set(l, name); });
+  // '간편가입 X'는 수수료표에 'X … 간편심사형'(또는 '간편가입 X')으로 적힌 같은 상품입니다. 간편 표기가 없으면 간편 상품은 뺍니다.
+  const hitsByTok = toks.map(t => {
+    const simple = t.startsWith('간편가입'), core = simple ? t.slice(4) : t;
+    return labels.filter(l => { const sq = squash(l); const f = families.get(l); if (!f.includes(core)) return false; const isSimple = /간편가입|간편심사/.test(sq); return simple ? isSimple : !isSimple; });
+  });
+  if (hitsByTok.some(h => !h.length)) return null;
+  let picked = [].concat(...hitsByTok);
+  picked = picked.filter((l, i) => picked.indexOf(l) === i);
+  const free = /납기\s*무관/.test(per);
+  let ok = picked;
+  if (!free) {
+    const nums = (per.match(/\d+/g) || []).map(Number);
+    const cmp = /이상/.test(per) ? 'ge' : /미만/.test(per) ? 'lt' : /이하/.test(per) ? 'le' : /초과/.test(per) ? 'gt' : 'eq';
+    ok = picked.filter(l => {
+      const b = periodBucket(l); if (!b) return false;
+      const n = nums[0];
+      if (cmp === 'ge') return b.lo >= n;
+      if (cmp === 'gt') return b.lo > n;
+      if (cmp === 'lt') return b.hi < n;
+      if (cmp === 'le') return b.hi <= n;
+      return nums.some(x => b.lo <= x && x <= b.hi);
+    });
+  }
+  if (!ok.length) return null;
+  let off = when === '익월' ? 1 : when === '익익월' ? 2 : Number((when.match(/\d+/) || [1])[0]);
+  if (/차년도/.test(when)) { const mm = `${r.memo || ''} ${r.src_text || ''}`.match(/(\d+)\s*회/); off = mm ? Number(mm[1]) : 13; }
+  return { targets: ok, pct, off, month13: off >= 13 };
+}
+
 function validate(raw, ctx) {
   const warnings = [];
   const products = ctx.products || {};
@@ -171,6 +221,7 @@ function validate(raw, ctx) {
     const labelByNorm = new Map(), labelBySquash = new Map();
     if (labels) labels.forEach(l => { labelByNorm.set(norm(l), l); labelBySquash.set(squash(l), l); });
     if (!batch.company) { warnings.push('보험사를 알 수 없는 시책 묶음이 있어 제외했습니다.'); continue; }
+    if (labels && !labels.length && batch.grp === 'life') warnings.push(`${batch.company}: 수수료표에서 받은 상품 목록이 0개입니다 — 상품 연결을 할 수 없습니다(수수료표의 '보험상품' 범위 확인).`);
     if (labels === null && batch.grp === 'life') warnings.push(`${batch.company}: 수수료표에서 상품 목록을 찾지 못해 상품 연결을 하지 못했습니다(보험사 이름이 수수료표와 같은지 확인).`);
 
     const rules = [];
@@ -195,7 +246,7 @@ function validate(raw, ctx) {
       }
       if (r.pay_offset != null && r.pay_offset !== '') {
         let po = Math.round(Number(r.pay_offset)) || 0;
-        if (po > 16) po = 16;
+        if (po > 48) po = 48; // 2·3차년도 시상(예: 18회차·28회차 유지 후 지급)은 16차월을 넘습니다
         if (po >= 4 && po <= 12) addNote(r, `지급 시기 ${po}차월은 드문 값입니다 — 공지 확인 필요`);
         r.pay_offset = po > 0 ? po : undefined;
       }
@@ -272,6 +323,18 @@ function validate(raw, ctx) {
             } else addNote(r, '연속가동의 앞 기간과 뒤 기간이 같게 읽혔습니다 — 공지 표에서 기간 확인 필요');
           }
           }
+        }
+      }
+      // AI가 대응 상품을 못 찾았다고 내린 단순 시책은 프로그램이 이름·납입기간으로 다시 연결해 봅니다
+      if (r.itype === 'note' && batch.grp === 'life' && labels && labels.length && !(Array.isArray(r.targets) && r.targets.length) && /대응 상품을 찾지 못함|대상 상품을 수수료표에서 찾지 못/.test(String(r.review_note || ''))) {
+        const rs = rescueTargets(r, labels);
+        if (rs) {
+          r.itype = rs.month13 ? 'month13' : 'monthly'; r.calc = 'pct'; r.value = rs.pct;
+          r.pay_offset = rs.month13 ? (rs.off !== 13 ? rs.off : (/15\s*(?:차월|회)/.test(`${r.memo || ''} ${r.src_text || ''}`) ? 15 : 13)) : rs.off;
+          r.targets = rs.targets;
+          r.review_note = undefined;
+          addNote(r, `AI가 상품을 연결하지 못해 프로그램이 상품 이름·납입기간으로 ${rs.targets.length}개 라벨을 연결했습니다 — '대상 상품' 목록을 원본과 대조해 주세요`);
+          warnings.push(`${batch.company} · ${r.title}: 프로그램이 상품 ${rs.targets.length}개를 이름으로 연결했습니다(대조 필요)`);
         }
       }
       // 상품 연결 점검
@@ -461,6 +524,14 @@ function auditAgainstTranscript(r, tr) {
   const pairSet = new Set(pairs.map(p => `${p.h}:${p.v}`)), valSet = new Set(pairs.map(p => p.v)), pctSet = new Set();
   const grabPct = t => { const re = /(\d+(?:\.\d+)?)\s*%/g; let x; while ((x = re.exec(String(t || '')))) pctSet.add(parseFloat(x[1])); pctWords(t).forEach(v => pctSet.add(v)); };
   (tr.percents || []).forEach(grabPct); grabPct(tr.text); (tr.pairs || []).forEach(p => grabPct(p.value));
+  // 공지 표는 머리글에 '(%)'만 적고 칸에는 % 없이 숫자만 적는 경우가 많습니다(익월 400 / 2차년도 300).
+  // 그래서 단위(원·년·회·차월 등)가 붙지 않은 표의 숫자도 모두 '공지에 있는 지급률 후보'로 인정합니다.
+  // (공지에 아예 없는 숫자만 걸러내므로, AI가 숫자를 잘못 옮긴 경우는 그대로 잡힙니다)
+  {
+    const reB = /(?<![\d.,])(\d{2,4})(?![\d.,]|\s*(?:년|회|차|월|일|세|만|원|종|개|%))/g; let xb;
+    const srcs = [String(tr.text || '')].concat((tr.pairs || []).map(p => String(p.value == null ? '' : p.value)));
+    srcs.forEach(t => { reB.lastIndex = 0; while ((xb = reB.exec(t))) pctSet.add(parseInt(xb[1], 10)); });
+  }
   const re2 = /(\d+(?:[.,]\d+)?)\s*만\s*원?\s*(?:↑|이상)\s*[:：]?\s*(\d+(?:[.,]\d+)?)\s*만/g; let y;
   while ((y = re2.exec(String(tr.text || '')))) { const h = Math.round(parseFloat(y[1].replace(/,/g, '')) * 1e4), v = Math.round(parseFloat(y[2].replace(/,/g, '')) * 1e4); pairSet.add(`${h}:${v}`); valSet.add(v); }
   if (r.itype === 'tier' && Array.isArray(r.tiers) && pairSet.size >= 2) {
