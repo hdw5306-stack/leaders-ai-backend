@@ -123,6 +123,24 @@ const SYSTEM_PROMPT = `당신은 한국 보험 GA(법인대리점)의 시책 담
 9. 한 줄에 적힌 "익월 N% + 13회 M%"는 익월 시책(monthly) 규칙과 13회 시책(month13) 규칙 두 개로 나누어 만듭니다. 합쳐서 하나의 안내(note)로 만들지 마세요.
 10. JSON 외의 텍스트, 마크다운 코드블록은 출력하지 않습니다.`;
 
+// 보험사별로 공지에 쓰이는 별칭·표기 규칙(본사가 확인해 준 내용). 해당 보험사의 공지를 읽을 때 AI 에게 함께 알려 줍니다.
+const COMPANY_HINTS = {
+  '한화생명': [
+    "공지의 '[보장통장]'·'보장통장'은 별도 상품이 아니라 실속가득H통합보험·시그니처H통합보험(간편가입 포함)을 부르는 이름입니다. 보장통장 시책도 수수료표의 '실속가득 H통합보험', '시그니처 H통합(건강)보험' 라벨에 연결하고, 상품이 없다고 안내(note)로 내리지 마세요.",
+    "같은 상품에 같은 시책이 겹치지 않게 하세요. '실속가득/시그니처H통합보험 익월 400%'와 '[보장통장] 익월 400%+13회 200%'는 같은 상품의 같은 익월 400%입니다. 익월 400%는 한 번만 규칙으로 만들고, 보장통장 우대 '13회 200%'만 따로 13회 규칙으로 만듭니다. 구간·연속가동·멤버십·조기가동 프로모션도 대상이 같으면 한 규칙입니다.",
+    "'경영인정기'는 수수료표의 '경영인H정기보험' 라벨(간편가입 포함)입니다. 납입기간 구분이 없는 전기납 라벨이어도 경영인정기 시책은 해당 상품 전체 라벨에 연결합니다.",
+    "종신보험에서 같은 상품의 '20년납 미만'과 '20년납' 열이 나란히 있으면 '20년납' 열은 20년납 이상(20년납 포함 더 긴 납입기간 모두)입니다.",
+  ],
+  '처브라이프생명': [
+    "공지의 '간편가입 X'는 수수료표의 'X … 간편심사형'(또는 '간편가입 X') 라벨과 같은 상품입니다. 간편가입 표기가 없는 시책은 일반심사형 라벨에만 연결합니다.",
+  ],
+};
+function companyHints(names) {
+  const out = [];
+  (names || []).forEach(n => { if (COMPANY_HINTS[n]) { out.push(`\n[${n} 공지 읽기 안내 — 본사 확인 내용]`); COMPANY_HINTS[n].forEach(h => out.push('- ' + h)); } });
+  return out.length ? out.join('\n') + '\n' : '';
+}
+
 function userPrompt({ filename, today, products, nonlife, fileText }) {
   let s = `[오늘 날짜] ${today}\n[파일 이름] ${filename}\n\n`;
   const names = Object.keys(products || {});
@@ -134,6 +152,7 @@ function userPrompt({ filename, today, products, nonlife, fileText }) {
       s += `\n■ ${n} (${products[n].length}개)\n` + products[n].map(x => '- ' + x).join('\n') + '\n';
     }
   }
+  s += companyHints(names);
   const nn = Object.keys(nonlife || {});
   if (nn.length) {
     s += '\n[손해보험사 참고 — 수수료표 입력 항목(상품 라벨 대신 tag 사용)]\n';

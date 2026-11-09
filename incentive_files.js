@@ -160,7 +160,13 @@ function slideXmlToTextPositioned(xml) {
       let y = it.y; const rows = [];
       tbl.kids.filter(k => k.tag === 'a:tr').forEach(tr => {
         const h = (attr(tr, 'h') || 0) * (it.sy || 1);
-        const cells = tr.kids.filter(k => k.tag === 'a:tc').map(tc => nodeText(tc));
+        // 병합된 칸: 합쳐져 가려진 칸(hMerge/vMerge)에 남아 있는 글자는 화면에 보이지 않으므로 읽지 않고,
+        // 여러 칸에 걸친 머리글(gridSpan)에는 걸친 칸 수를 표시합니다.
+        const cells = tr.kids.filter(k => k.tag === 'a:tc').map(tc => {
+          if (/\b(?:hMerge|vMerge)="(?:1|true)"/.test(tc.attrs)) return '';
+          const gs = /\bgridSpan="(\d+)"/.exec(tc.attrs), t = nodeText(tc);
+          return gs && Number(gs[1]) > 1 && t ? `${t} ⟨머리글이 오른쪽 ${gs[1]}칸에 걸침⟩` : t;
+        });
         rows.push({ y0: y, y1: y + h, cells, labels: [] }); y += h;
       });
       tables.push({ x0: it.x, x1: it.x + it.w, y0: it.y, y1: y, rows });
