@@ -136,7 +136,20 @@ function applyScopedCaps(rules, trText, company, warnings) {
 
 // AI가 "수수료표에서 대응 상품을 찾지 못함"으로 안내(note)로 내린 시책 중, 제목이 "상품 / 납입기간 / 익월·13차월 N%" 꼴로 단순한 것은
 // 프로그램이 상품 이름과 납입기간으로 직접 라벨을 찾아 연결합니다(이름이 긴 보험사 대비). 모든 상품 이름이 라벨에서 확인될 때만 연결합니다.
-const sqLow = x => squash(x).toLowerCase().replace(/[()\[\]·,.\-_]/g, '');
+// 영문 표기와 한글 표기는 같은 이름으로 봅니다(Plus=플러스, H종신=에이치종신 …). 상품 이름을 비교하는 곳은 모두 이 함수를 거치므로
+// 공지가 영문으로 적었든 수수료표가 한글로 적었든(또는 그 반대든) 같은 상품으로 인식합니다.
+const EN_KO = { platinum: '플래티넘', premium: '프리미엄', special: '스페셜', smart: '스마트', plus: '플러스', best: '베스트', care: '케어', light: '라이트', super: '슈퍼', easy: '이지', prime: '프라임', select: '셀렉트', gold: '골드', silver: '실버', classic: '클래식', master: '마스터', active: '액티브', happy: '해피', basic: '베이직', standard: '스탠다드', joy: '조이', free: '프리', first: '퍼스트', star: '스타', top: '탑', one: '원', new: '뉴', pro: '프로', max: '맥스', mini: '미니', duo: '듀오', life: '라이프', health: '헬스', cancer: '캔서', senior: '시니어', junior: '주니어', dream: '드림', hope: '호프', value: '밸류', power: '파워', income: '인컴', return: '리턴', flex: '플렉스', triple: '트리플', double: '더블', up: '업', family: '패밀리', total: '토탈', real: '리얼', top: '탑', mom: '맘', baby: '베이비', kids: '키즈', teen: '틴', good: '굿', wide: '와이드', easycare: '이지케어', vip: '브이아이피', ceo: '씨이오', cancel: '캔슬', direct: '다이렉트', mobile: '모바일', online: '온라인', hi: '하이', high: '하이', low: '로우', big: '빅', all: '올', every: '에브리', my: '마이', we: '위', you: '유', me: '미' };
+const LETTER_KO = { a: '에이', b: '비', c: '씨', d: '디', e: '이', f: '에프', g: '지', h: '에이치', i: '아이', j: '제이', k: '케이', l: '엘', m: '엠', n: '엔', o: '오', p: '피', q: '큐', r: '알', s: '에스', t: '티', u: '유', v: '브이', w: '더블유', x: '엑스', y: '와이', z: '제트' };
+function translit(x) {
+  return String(x).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[A-Za-z]+/g, w => {
+    const lw = w.toLowerCase();
+    if (EN_KO[lw]) return EN_KO[lw];
+    if (w.length <= 3) return lw.split('').map(c => LETTER_KO[c] || c).join('');   // H, KB, AIA, DB 같은 약자는 글자 이름대로
+    return lw;
+  });
+}
+const sqLow = x => squash(translit(norm(x))).replace(/[()\[\]·,.\-_]/g, '');
+const sqRaw = x => squash(x).toLowerCase().replace(/[()\[\]·,.\-_]/g, '');   // 영문 그대로(영문 한 글자를 빼고 찾는 보조 비교용)
 function periodBucket(label) {
   const t = squash(label);
   let m = t.match(/(\d+)년이상(\d+)년미만납?/); if (m) return { lo: +m[1], hi: +m[2] - 1 };
@@ -152,19 +165,21 @@ function rescueTargets(r, labels) {
   const m = title.match(/^(.+?)\s+((?:납기\s*무관|\d+\s*년\s*납?)(?:\s*[·,/]\s*\d+\s*년\s*납?)*(?:\s*(?:이상|미만|이하|초과))?)\s+(익월|익익월|\d+\s*차월|\d+\s*회|\d+\s*차년도)\s+(\d+(?:\.\d+)?)\s*%$/);
   if (!m) return null;
   const prodPart = m[1], per = m[2], when = m[3], pct = Number(m[4]);
-  const toks = prodPart.split(/[\/·,]/).map(x => sqLow(x)).filter(x => x.length >= 2);
+  const tokPairs = prodPart.split(/[\/·,]/).map(x => ({ t: sqLow(x), r: sqRaw(x) })).filter(p => p.t.length >= 2);
+  const toks = tokPairs.map(p => p.t);
   if (!toks.length) return null;
-  const families = new Map();
-  labels.forEach(l => { const name = sqLow(String(l).replace(/\s{2,}.*$/, '')); families.set(l, name); });
+  const families = new Map(), famRaw = new Map();
+  labels.forEach(l => { const nm = String(l).replace(/\s{2,}.*$/, ''); families.set(l, sqLow(nm)); famRaw.set(l, sqRaw(nm)); });
   // '간편가입 X'는 수수료표에 'X … 간편심사형'(또는 '간편가입 X')으로 적힌 같은 상품입니다. 간편 표기가 없으면 간편 상품은 뺍니다.
-  const hitsByTok = toks.map(t => {
+  const hitsByTok = toks.map((t, ti) => {
     const simple = t.startsWith('간편가입'), core = simple ? t.slice(4) : t;
     const pick = (match) => labels.filter(l => { const sq = squash(l); if (!match(families.get(l))) return false; const isSimple = /간편가입|간편심사/.test(sq); return simple ? isSimple : !isSimple; });
     const exact = pick(f => f.includes(core));
     if (exact.length) return exact;
     // 영문 한 글자 차이(예: 공지 '경영인정기' ↔ 라벨 '경영인H정기보험')는 영문을 뺀 이름으로 한 번 더 찾습니다
-    const core2 = core.replace(/[a-z]/g, '');
-    return core2.length >= 3 ? pick(f => f.replace(/[a-z]/g, '').includes(core2)) : [];
+    const rawTok = tokPairs[ti].r, coreRaw = simple ? rawTok.slice(4) : rawTok;
+    const core2 = coreRaw.replace(/[a-z]/g, '');
+    return core2.length >= 3 ? labels.filter(l => { const sq = squash(l); const isSimple = /간편가입|간편심사/.test(sq); return (simple ? isSimple : !isSimple) && famRaw.get(l).replace(/[a-z]/g, '').includes(core2); }) : [];
   });
   if (hitsByTok.some(h => !h.length)) return null;
   let picked = [].concat(...hitsByTok);
@@ -228,11 +243,17 @@ function nameMatches(label, tok) {
   const re = new RegExp('^' + m[1].split('.').map(x => (x === 'N' ? '\\d+' : x)).join('\\.') + '$');
   return re.test(String(tok).replace(/\s+/g, ''));
 }
+// 공지의 상품 이름에 'Plus'·'플러스' 같은 꼬리표가 붙어 있는데 수수료표에는 그 꼬리표 없이 한글 이름만 있을 때를 위한 한글 이름(어근)
+function stemOf(tok) {
+  const t = String(tok).replace(/\s+/g, '');
+  const m = /^([가-힣]{3,}?)(?:plus|플러스)$/i.exec(t);
+  return m ? m[1] : '';
+}
 function linkNamedProducts(rules, labels, company, warnings) {
   if (!labels || !labels.length) return;
   const UN_RE = /연결되지 않|대응 상품을 찾지 못|대상 상품을 수수료표에서 찾지 못|대응하는 .*라벨이 없/;
   const prefer = PREFER_SUBSTR[company];
-  const covers = (targets, tok) => (targets || []).some(l => nameMatches(l, tok));
+  const covers = (targets, tok) => (targets || []).some(l => nameMatches(l, tok) || (stemOf(tok) && sqLow(l).includes(sqLow(stemOf(tok)))));
   const groups = [];
   rules.forEach(r => { if (r.itype !== 'note' && r.itype !== 'goods' && Array.isArray(r.targets) && r.targets.length && listedProducts(r).length >= 2) groups.push({ S: r, toks: listedProducts(r) }); });
   // AI가 상품 나열을 시책 본문이 아니라 "미연결 상품" 안내 카드에만 적은 경우에도 찾을 수 있도록, 안내 카드의 상품 목록 중 2개 이상이
@@ -260,9 +281,25 @@ function linkNamedProducts(rules, labels, company, warnings) {
       if (covers(S.targets, tok)) return;
       let found = labels.filter(l => nameMatches(l, tok));
       if (prefer && found.some(l => l.includes(prefer)) && found.some(l => !l.includes(prefer))) found = found.filter(l => l.includes(prefer));
+      let viaStem = false;
+      if (!found.length && stemOf(tok)) { found = labels.filter(l => sqLow(l).includes(sqLow(stemOf(tok)))); viaStem = true; }
       found = found.filter(l => !S.targets.includes(l));
-      if (!found.length || found.length > 8) return;
+      if (!found.length || found.length > (viaStem ? 12 : 8)) return;
       S.targets = S.targets.concat(found); linked.push(`${tok}(${found.length}개)`);
+      if (viaStem) {
+        const fam = Array.from(new Set(found.map(l => l.split(/\s+/)[0]))).join('·');
+        warnings.push(`${company}: 공지 '${tok}'는 수수료표에 같은 이름이 없어, 꼬리표(Plus)를 뺀 한글 이름 '${stemOf(tok)}'으로 찾은 ${fam} ${found.length}개 라벨에 연결했습니다 — 같은 상품인지 확인하세요`);
+        // 표준형은 월초의 일정 비율만 인정하는 규칙이 같은 공지의 다른 시책에 이미 있으면 그 비율을 이 시책에도 적용합니다
+        const std = found.filter(l => /표준형/.test(l));
+        if (std.length && S.itype === 'tier') {
+          let f = 0;
+          rules.forEach(r => { if (r.sub_factor && Number(r.sub_factor.factor) > 0) f = Number(r.sub_factor.factor); else if (/표준형/.test(r.title || '') && Number(r.premium_factor) > 0 && Number(r.premium_factor) < 1) f = Number(r.premium_factor); });
+          if (f) {
+            const cur = S.sub_factor && Number(S.sub_factor.factor) === f ? S.sub_factor.targets : [];
+            S.sub_factor = { factor: f, targets: cur.concat(std) };
+          }
+        }
+      }
     });
     linked.length = 0; toks.forEach((t, k) => { if (!before[k] && covers(S.targets, t)) linked.push(t); });
     const left = toks.filter(t => !covers(S.targets, t));
@@ -278,7 +315,7 @@ function linkNamedProducts(rules, labels, company, warnings) {
     }
     if (S.memo) {
       const ss = String(S.memo).split(/(?<=[.。])\s+/);
-      const keepM = ss.filter(x => !(CLAIM.test(x) && (toks.some(t => x.includes(t)) || /연결 가능한|나머지 상품은 별도 안내|연결하지 못|찾지 못/.test(x))));
+      const keepM = ss.filter(x => !(CLAIM.test(x) && (toks.some(t => x.includes(t)) || /연결 가능한|나머지|부재|참조|연결하지 못|찾지 못|별도 안내/.test(x))));
       if (keepM.length !== ss.length) touched = true;
       S.memo = keepM.join(' ');
     }
@@ -1147,6 +1184,13 @@ function crossCheck(outA, outB, tr, srcText) {
   // 확인용 근거 글: AI 가 옮겨 적은 글(transcript)에 더해, 파일에서 직접 뽑은 원문(PPT·워드·엑셀 등)도 함께 봅니다.
   // 옮겨 적기가 표의 일부를 놓쳐도 원문에 그 숫자가 있으면 틀렸다고 하지 않기 위해서입니다.
   const trE = (tr || (srcText && String(srcText).trim())) ? Object.assign({ percents: [], pairs: [] }, tr || {}, { text: String((tr && tr.text) || '') + '\n' + String(srcText || '') }) : tr;
+  const evPct = new Set();
+  if (trE) {
+    const et = String(trE.text || '');
+    et.replace(/(\d+(?:\.\d+)?)\s*%/g, (m, x) => { evPct.add(parseFloat(x)); return m; });
+    et.replace(/(?<![\d.])(\d{1,3}) (\d{1,3})\s*%/g, (m, x, y) => { evPct.add(parseFloat(x + y)); return m; });
+    (trE.percents || []).forEach(v => { if (Number.isFinite(Number(v))) evPct.add(Number(v)); });
+  }
   let total = 0, agreed = 0, flagged = 0;
   const money = r => r.itype !== 'note' && r.itype !== 'goods';
   const pickB = (a, pool, used) => {
@@ -1237,7 +1281,8 @@ function crossCheck(outA, outB, tr, srcText) {
         // PDF 글자 층이 숫자를 "15 0%", "5 50%"처럼 끊어 놓은 경우(150%, 550%)도 같은 수로 인정합니다
         String(a.src_text).replace(/(?<![\d.])(\d{1,3}) (\d{1,3})\s*%/g, (m, x, y) => { ps.push(parseFloat(x + y)); });
         pctWords(a.src_text).forEach(v => ps.push(v));
-        if (ps.length && !ps.includes(Number(a.value))) msgs.push(`입력된 ${a.value}%가 인용한 공지 문구(${ps.join('·')}%)와 다릅니다`);
+        // 인용 문구에는 없어도 공지 전체에 그 %가 적혀 있으면 인용만 부정확한 것이므로 걸러내지 않습니다(독립 대조는 아래에서 따로 합니다)
+        if (ps.length && !ps.includes(Number(a.value)) && !evPct.has(Number(a.value))) msgs.push(`입력된 ${a.value}%가 인용한 공지 문구(${ps.join('·')}%)와 다릅니다`);
       }
       const au = auditAgainstTranscript(a, trE);
       // 옮겨 적기에서 짝을 못 찾았을 뿐 틀렸다는 증거가 없고, 시책이 인용한 공지 문구(src_text)의 구간·금액 짝이 모두 일치하면 믿습니다
@@ -1275,4 +1320,4 @@ function crossCheck(outA, outB, tr, srcText) {
   return { warnings, summary, total, agreed, flagged, bUsable };
 }
 
-module.exports = { validate, norm, crossCheck, parseWon, applySubstitutions, cleanInsuranceTags, demoteAiNotes };
+module.exports = { nameMatches, translit, sqLow, validate, norm, crossCheck, parseWon, applySubstitutions, cleanInsuranceTags, demoteAiNotes };
