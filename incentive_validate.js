@@ -233,9 +233,27 @@ function linkNamedProducts(rules, labels, company, warnings) {
   const UN_RE = /연결되지 않|대응 상품을 찾지 못|대상 상품을 수수료표에서 찾지 못|대응하는 .*라벨이 없/;
   const prefer = PREFER_SUBSTR[company];
   const covers = (targets, tok) => (targets || []).some(l => nameMatches(l, tok));
-  const sources = rules.filter(r => r.itype !== 'note' && r.itype !== 'goods' && Array.isArray(r.targets) && r.targets.length && listedProducts(r).length >= 2);
-  sources.forEach(S => {
-    const toks = listedProducts(S);
+  const groups = [];
+  rules.forEach(r => { if (r.itype !== 'note' && r.itype !== 'goods' && Array.isArray(r.targets) && r.targets.length && listedProducts(r).length >= 2) groups.push({ S: r, toks: listedProducts(r) }); });
+  // AI가 상품 나열을 시책 본문이 아니라 "미연결 상품" 안내 카드에만 적은 경우에도 찾을 수 있도록, 안내 카드의 상품 목록 중 2개 이상이
+  // 이미 대상 상품에 들어 있는 시책을 그 목록의 주인으로 봅니다(같은 읽기라도 AI가 나열 위치를 달리 적을 수 있기 때문)
+  rules.forEach(N => {
+    if (N.itype !== 'note' || !UN_RE.test(`${N.review_note || ''} ${N.title || ''} ${N.memo || ''}`)) return;
+    const nt = listedProducts(N);
+    if (nt.length < 2) return;
+    let best = null, bs = 0;
+    const head = squash(String(N.title || '').split(/[—\-–]/)[0]);
+    rules.forEach(r => {
+      if (r === N || r.itype === 'note' || r.itype === 'goods' || !Array.isArray(r.targets) || !r.targets.length) return;
+      const c = nt.filter(t => covers(r.targets, t)).length;
+      if (c < 2) return;
+      // 제목이 같은 시책을 우선하고, 그다음은 "대상 상품 중 공지 상품이 차지하는 비율"이 높은 시책(상품 수가 많은 다른 시책에 끌려가지 않도록)
+      const sc = (head.length >= 4 && squash(r.title).includes(head) ? 1000 : 0) + c / r.targets.length;
+      if (sc > bs) { bs = sc; best = r; }
+    });
+    if (best && !groups.some(g => g.S === best)) groups.push({ S: best, toks: nt });
+  });
+  groups.forEach(({ S, toks }) => {
     const linked = [];
     const before = toks.map(t => covers(S.targets, t));
     toks.forEach(tok => {

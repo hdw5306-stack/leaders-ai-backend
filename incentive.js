@@ -135,6 +135,10 @@ async function callAI({ system, content, maxOutput, rotate }) {
 // 판정이 실패하거나 모호하면 그 쪽은 반드시 읽습니다(빠뜨림 방지). 첫 쪽과 글자 층이 충분한 쪽은 항상 읽습니다.
 async function prunePages(input, warnings) {
   try {
+    // [근본 조치] 값싼 모델이 작은 그림만 보고 쪽을 '홍보 그림'으로 판정하는 방식은 같은 공지도 읽을 때마다 결과가 달라졌고,
+    // 흥국생명 종신 특별시책 포스터(트리플더블업·리턴100 시책 범위가 적힌 쪽)를 홍보 그림으로 잘못 빼 시책 범위가 틀어졌습니다.
+    // 그래서 기본은 모든 쪽을 읽습니다. 비용 절감이 꼭 필요할 때만 환경변수 INCENTIVE_PRUNE=1 로 켭니다.
+    if (process.env.INCENTIVE_PRUNE !== '1') return;
     const pi = input && input.pageInfo; if (!pi || pi.length < 2 || !input.imageParts || !process.env.OPENAI_API_KEY) return;
     const model = process.env.INCENTIVE_TRIAGE_MODEL || 'gpt-4.1-mini';
     const verdicts = await Promise.all(pi.map(async (pg, idx) => {
