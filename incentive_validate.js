@@ -204,6 +204,83 @@ function excludedNamesFromNotes(rules) {
   });
   return Array.from(new Set(names));
 }
+// ── 공지에 나열된 상품 이름(예: "상품 : 오튼튼 / 3.10.5.5 / 3.8.5.5 …")이 수수료표에 있는데도 연결되지 않은 경우, 이름으로 직접 찾아 연결합니다
+const PREFER_SUBSTR = { '흥국생명': '간편' }; // 같은 이름의 상품이 '간편'과 일반으로 둘 다 있으면 '간편'만 (본사 확인)
+const GENERIC_NAME_RE = /^(?:종신|건강|암|상해|보험|전상품|전체|해당|해당상품|상품|신상품|정기|치매|간병|종신보험|건강보험)$/;
+function listedProducts(r) {
+  const t = String(r.src_text || '');
+  const m = /상품\s*[:：]\s*(.+)$/.exec(t);
+  if (!m) return [];
+  const out = [];
+  m[1].split(/\s*[\/,，、]\s*/).forEach(x => {
+    x = norm(x).replace(/\s+(?:\d|현금|\(?\d).*$/, '').replace(/^[\s\-–*·]+|[\s\-–*·]+$/g, '');
+    if (/^(?:현금|시상|지급|[\d,]+\s*(?:만|원|%))/.test(x)) return;
+    if (squash(x).length >= 3 && !GENERIC_NAME_RE.test(squash(x))) out.push(x);
+  });
+  return out;
+}
+function linkNamedProducts(rules, labels, company, warnings) {
+  if (!labels || !labels.length) return;
+  const UN_RE = /연결되지 않|대응 상품을 찾지 못|대상 상품을 수수료표에서 찾지 못|대응하는 .*라벨이 없/;
+  const prefer = PREFER_SUBSTR[company];
+  const covers = (targets, tok) => (targets || []).some(l => sqLow(l).includes(sqLow(tok)));
+  const sources = rules.filter(r => r.itype !== 'note' && r.itype !== 'goods' && Array.isArray(r.targets) && r.targets.length && listedProducts(r).length >= 2);
+  sources.forEach(S => {
+    const toks = listedProducts(S);
+    const linked = [];
+    toks.forEach(tok => {
+      if (covers(S.targets, tok)) return;
+      let found = labels.filter(l => sqLow(l).includes(sqLow(tok)));
+      if (prefer && found.some(l => l.includes(prefer)) && found.some(l => !l.includes(prefer))) found = found.filter(l => l.includes(prefer));
+      found = found.filter(l => !S.targets.includes(l));
+      if (!found.length || found.length > 8) return;
+      S.targets = S.targets.concat(found); linked.push(`${tok}(${found.length}개)`);
+    });
+    if (!linked.length) return;
+    const all = toks.every(t => covers(S.targets, t));
+    if (S.review_note) S.review_note = S.review_note.split(/\s+·\s+/).filter(x => !/대응하는 .*라벨이 없|누락될 수/.test(x)).join(' · ') || undefined;
+    S.memo = norm(((S.memo ? S.memo + ' · ' : '') + `공지에 적힌 상품 이름 ${linked.join(', ')}을(를) 수수료표에서 이름으로 찾아 연결했습니다`).slice(0, 500));
+    warnings.push(`${company}: '${String(S.title).slice(0, 24)}' — 공지 상품 ${linked.join(', ')}을(를) 수수료표 이름으로 연결했습니다(대상 상품 목록 확인)`);
+    if (all) {
+      for (let i = rules.length - 1; i >= 0; i--) {
+        const N = rules[i];
+        if (N.itype !== 'note' || N === S) continue;
+        const nt = listedProducts(N);
+        if (nt.length >= 2 && UN_RE.test(`${N.review_note || ''} ${N.title || ''} ${N.memo || ''}`) && nt.every(t => covers(S.targets, t))) rules.splice(i, 1);
+      }
+    }
+  });
+}
+// ── 한 구간표(월초 합계 구간 시상)에 인정 비율이 다른 상품(표준형 월초 50% 등)이 섞여 규칙이 둘로 나뉘면, 하나의 구간표로 합쳐
+//    "표준형은 월초 50%만 더해서 한 번만 판정"하도록 합니다(나뉜 채로 두면 구간 시상이 두 번 지급되고 합계 판정도 틀립니다)
+function mergeTierFactors(rules, company, warnings) {
+  const f = r => Number(r.premium_factor) || 1;
+  const sig = r => JSON.stringify([r.start, r.end, r.pay_offset || 0, r.tier_bucket || '', (r.tiers || []).map(t => [t.min, t.pay, t.prev || 0]), r.cap_premium || 0, r.min_premium || 0, r.max_premium || 0, r.tag || '', r.prereq || null]);
+  let merged = 0;
+  for (let i = 0; i < rules.length; i++) {
+    const a = rules[i];
+    if (a.itype !== 'tier' || !Array.isArray(a.targets) || !a.targets.length || !Array.isArray(a.tiers) || !a.tiers.length || a.sub_factor) continue;
+    for (let j = i + 1; j < rules.length; j++) {
+      const b = rules[j];
+      if (b.itype !== 'tier' || !Array.isArray(b.targets) || !b.targets.length || b.sub_factor) continue;
+      if (sig(a) !== sig(b) || f(a) === f(b)) continue;
+      if (b.targets.some(t => a.targets.includes(t))) continue;
+      const main = f(a) > f(b) ? a : b, sub = main === a ? b : a;
+      main.sub_factor = { factor: f(sub), targets: sub.targets.slice() };
+      main.targets = main.targets.concat(sub.targets);
+      main.title = norm(String(main.title || '').replace(/\s*[—\-–]\s*표준형(?:\s*외)?\s*$/, '')).slice(0, 200);
+      const keep = x => x ? (String(x).split(/\s+·\s+/).filter(y => !/나누어 기재|중복 방지|동일 가동|인정 비율|겹쳐 합산/.test(y)).join(' · ') || undefined) : undefined;
+      main.review_note = keep(main.review_note);
+      main.memo = norm(((main.memo ? main.memo + ' · ' : '') + `표준형 등 ${sub.targets.length}개 상품은 월초의 ${Math.round(f(sub) * 100)}%만 합산하여 한 번에 구간을 판정합니다`).slice(0, 500));
+      rules.splice(rules.indexOf(sub), 1);
+      merged++;
+      if (sub === a) { i = -1; }
+      break;
+    }
+  }
+  if (merged) warnings.push(`${company}: 인정 비율이 다른 상품(표준형 50% 등)으로 나뉜 구간 시상 ${merged}건을 하나로 합쳤습니다 — 표준형은 월초의 50% 등 상품별 비율만 합산해 구간을 한 번만 판정합니다`);
+  return merged;
+}
 function applyRestOfProducts(rules, labels, company, warnings) {
   if (!labels || !labels.length) return;
   rules.forEach(r => {
@@ -447,6 +524,7 @@ function validate(raw, ctx) {
       });
     }
     if (batch.grp === 'life') applyRestOfProducts(rules, labels, batch.company, warnings);
+    if (batch.grp === 'life') { linkNamedProducts(rules, labels, batch.company, warnings); mergeTierFactors(rules, batch.company, warnings); }
     // 같은 상품에 같은 종류·같은 지급시점의 시책이 둘 이상 겹치면 합산되므로 눈에 띄게 표시
     const money = rules.filter(r => ['monthly', 'weekly', 'joiner', 'month13'].includes(r.itype) && Array.isArray(r.targets));
     for (let i = 0; i < money.length; i++) {
