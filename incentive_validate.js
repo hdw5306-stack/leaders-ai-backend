@@ -219,18 +219,26 @@ function listedProducts(r) {
   });
   return out;
 }
+// 수수료표 상품명에 'N'이 숫자 자리 표시로 들어간 경우(예: 3.N.5.N플러스간편건강보험)는 3.8.5.5·3.6.5.1처럼 N 자리에 숫자가 들어간 이름과 같은 상품으로 봅니다
+function nameMatches(label, tok) {
+  if (sqLow(label).includes(sqLow(tok))) return true;
+  const m = /^((?:\d+|N)(?:\.(?:\d+|N))+)/.exec(String(label).trim().split(/\s+/)[0]);
+  if (!m || !/N/.test(m[1])) return false;
+  const re = new RegExp('^' + m[1].split('.').map(x => (x === 'N' ? '\\d+' : x)).join('\\.') + '$');
+  return re.test(String(tok).replace(/\s+/g, ''));
+}
 function linkNamedProducts(rules, labels, company, warnings) {
   if (!labels || !labels.length) return;
   const UN_RE = /연결되지 않|대응 상품을 찾지 못|대상 상품을 수수료표에서 찾지 못|대응하는 .*라벨이 없/;
   const prefer = PREFER_SUBSTR[company];
-  const covers = (targets, tok) => (targets || []).some(l => sqLow(l).includes(sqLow(tok)));
+  const covers = (targets, tok) => (targets || []).some(l => nameMatches(l, tok));
   const sources = rules.filter(r => r.itype !== 'note' && r.itype !== 'goods' && Array.isArray(r.targets) && r.targets.length && listedProducts(r).length >= 2);
   sources.forEach(S => {
     const toks = listedProducts(S);
     const linked = [];
     toks.forEach(tok => {
       if (covers(S.targets, tok)) return;
-      let found = labels.filter(l => sqLow(l).includes(sqLow(tok)));
+      let found = labels.filter(l => nameMatches(l, tok));
       if (prefer && found.some(l => l.includes(prefer)) && found.some(l => !l.includes(prefer))) found = found.filter(l => l.includes(prefer));
       found = found.filter(l => !S.targets.includes(l));
       if (!found.length || found.length > 8) return;
@@ -238,9 +246,24 @@ function linkNamedProducts(rules, labels, company, warnings) {
     });
     if (!linked.length) return;
     const all = toks.every(t => covers(S.targets, t));
-    if (S.review_note) S.review_note = S.review_note.split(/\s+·\s+/).filter(x => !/대응하는 .*라벨이 없|누락될 수/.test(x)).join(' · ') || undefined;
+    if (S.review_note) {
+      const leftT = toks.filter(t => !covers(S.targets, t));
+      const segs = S.review_note.split(/\s+·\s+/).filter(x => !/대응하는 .*라벨이 없|누락될 수/.test(x));
+      if (leftT.length) segs.push(`확인 필요 — 전략 상품 중 ${leftT.join('·')}에 대응하는 상품 라벨이 없어 해당 상품 실적이 합계에서 누락될 수 있음`);
+      S.review_note = segs.join(' · ') || undefined;
+    }
     S.memo = norm(((S.memo ? S.memo + ' · ' : '') + `공지에 적힌 상품 이름 ${linked.join(', ')}을(를) 수수료표에서 이름으로 찾아 연결했습니다`).slice(0, 500));
     warnings.push(`${company}: '${String(S.title).slice(0, 24)}' — 공지 상품 ${linked.join(', ')}을(를) 수수료표 이름으로 연결했습니다(대상 상품 목록 확인)`);
+    if (!all) {
+      const left = toks.filter(t => !covers(S.targets, t));
+      rules.forEach(N => {
+        if (N.itype !== 'note' || N === S) return;
+        const nt = listedProducts(N);
+        if (nt.length >= 2 && UN_RE.test(`${N.review_note || ''} ${N.title || ''} ${N.memo || ''}`) && nt.some(t => left.includes(t))) {
+          N.memo = norm(`${left.join('·')}은(는) 수수료표에 대응 상품이 없어 연결하지 못했습니다. 나머지 상품은 수수료표 이름으로 연결했습니다`).slice(0, 500);
+        }
+      });
+    }
     if (all) {
       for (let i = rules.length - 1; i >= 0; i--) {
         const N = rules[i];
@@ -280,6 +303,33 @@ function mergeTierFactors(rules, company, warnings) {
   }
   if (merged) warnings.push(`${company}: 인정 비율이 다른 상품(표준형 50% 등)으로 나뉜 구간 시상 ${merged}건을 하나로 합쳤습니다 — 표준형은 월초의 50% 등 상품별 비율만 합산해 구간을 한 번만 판정합니다`);
   return merged;
+}
+// ── 일반 시책(익월·13회차 등)에서 표준형(월초 50% 인정) 상품이 한 규칙에 같이 들어오면, 표준형 상품만 따로 떼어 월초×50% 규칙으로 나눕니다
+//    (나누지 않으면 표준형 실적이 100%로 계산되어 시책이 과하게 예측됩니다)
+const STD50_RE = /표준형[^\n]{0,40}(?:월초|보험료)?[^\n]{0,12}50\s*%|표준형[^\n]{0,30}(?:월초|보험료)\s*[×x*]\s*0?\.?5\b/;
+function splitStandardRules(rules, company, warnings) {
+  const kinds = new Set(['monthly', 'month13', 'weekly', 'joiner']);
+  let n = 0, amb = new Set();
+  for (let i = 0; i < rules.length; i++) {
+    const r = rules[i];
+    if (!kinds.has(r.itype) || !Array.isArray(r.targets) || !r.targets.length) continue;
+    if ((Number(r.premium_factor) || 1) !== 1) continue;
+    if (!STD50_RE.test(`${r.title || ''} ${r.memo || ''} ${r.review_note || ''}`)) continue;
+    const isAmb = l => /다재다능/.test(l) && /표준형/.test(l);
+    const std = r.targets.filter(l => /표준형/.test(l) && !isAmb(l));
+    const rest = r.targets.filter(l => !/표준형/.test(l));
+    r.targets.filter(isAmb).forEach(l => amb.add(l));
+    if (!std.length || !rest.length) { if (r.targets.some(isAmb)) r.targets = r.targets.filter(l => !isAmb(l)); continue; }
+    const base = String(r.title || '').replace(/\s*[—\-–]\s*표준형(?:\s*외)?\s*$/, '');
+    const half = Object.assign({}, r, { title: norm(base + ' — 표준형').slice(0, 200), targets: std, premium_factor: 0.5 });
+    half.memo = norm(`표준형은 월초의 50%를 ${r.itype === 'month13' ? '13회차' : '시상'} 실적으로 인정합니다`).slice(0, 500);
+    r.title = norm(base + ' — 표준형 외').slice(0, 200);
+    r.targets = rest;
+    rules.splice(i + 1, 0, half);
+    i++; n++;
+  }
+  if (n) warnings.push(`${company}: 표준형 상품은 월초의 50%만 인정하는 시책 ${n}건을 '표준형 외'와 '표준형(월초×0.5)' 규칙으로 나누었습니다.`);
+  if (amb.size) warnings.push(`${company}: '해약환급금 미지급형 표준형' 라벨이 함께 적힌 다재다능 계열 ${amb.size}개 상품은 표준형 50% 인정 여부를 구분할 수 없어 계산에서 뺐습니다 — 본사 확인 필요`);
 }
 function applyRestOfProducts(rules, labels, company, warnings) {
   if (!labels || !labels.length) return;
@@ -524,7 +574,7 @@ function validate(raw, ctx) {
       });
     }
     if (batch.grp === 'life') applyRestOfProducts(rules, labels, batch.company, warnings);
-    if (batch.grp === 'life') { linkNamedProducts(rules, labels, batch.company, warnings); mergeTierFactors(rules, batch.company, warnings); }
+    if (batch.grp === 'life') { linkNamedProducts(rules, labels, batch.company, warnings); splitStandardRules(rules, batch.company, warnings); mergeTierFactors(rules, batch.company, warnings); }
     // 같은 상품에 같은 종류·같은 지급시점의 시책이 둘 이상 겹치면 합산되므로 눈에 띄게 표시
     const money = rules.filter(r => ['monthly', 'weekly', 'joiner', 'month13'].includes(r.itype) && Array.isArray(r.targets));
     for (let i = 0; i < money.length; i++) {
