@@ -22,6 +22,7 @@ const { SYSTEM_PROMPT, userPrompt, IDENTIFY_PROMPT, TRANSCRIBE_PROMPT } = requir
 const { validate, crossCheck, applySubstitutions } = require('./incentive_validate');
 const { applyProfiles } = require('./incentive_profiles');
 
+const BUNDLE_VERSION = '2026-11-10.5';
 const router = express.Router();
 const upload = multer({ limits: { fileSize: 15 * 1024 * 1024 } });
 const OPENAI_BASE = (process.env.OPENAI_BASE_URL || 'https://api.openai.com').replace(/\/$/, '');
@@ -251,6 +252,13 @@ async function runExtract(file, products, nonlife, force) {
   if (thirdUsage) { usage.input_tokens += thirdUsage.input_tokens || 0; usage.output_tokens += thirdUsage.output_tokens || 0; }
   [rA, rB2, rT2].forEach(r => { if (r.status === 'fulfilled' && r.value.usage) { usage.input_tokens += r.value.usage.input_tokens || 0; usage.output_tokens += r.value.usage.output_tokens || 0; } });
   console.log(`[시책읽기] ${file.filename} → ${v.batches.length}묶음 ${ruleCount}건 (확인필요 ${review}건) · ${cc.summary} · 모델 ${ai.model}/${rB2.status === 'fulfilled' ? rB2.value.model : '-'} 토큰 입력 ${usage.input_tokens} / 출력 ${usage.output_tokens}`);
+  // 함께 올려야 하는 파일 4개의 버전이 모두 같은지 확인합니다(일부만 올라가면 예전 동작이 섞여 같은 오류가 되풀이됩니다)
+  try {
+    const vs = { 'incentive.js': BUNDLE_VERSION, 'incentive_validate.js': require('./incentive_validate').BUNDLE_VERSION, 'incentive_prompt.js': require('./incentive_prompt').BUNDLE_VERSION, 'incentive_files.js': require('./incentive_files').BUNDLE_VERSION };
+    const bad = Object.keys(vs).filter(k => vs[k] !== BUNDLE_VERSION);
+    if (bad.length) warnings.unshift(`【파일 버전 불일치】 ${bad.join(', ')}이(가) 최신 버전(${BUNDLE_VERSION})이 아닙니다 — GitHub에 올린 파일을 확인하세요. 이 상태로 읽은 결과는 믿지 마세요.`);
+    else warnings.push(`엔진 버전 ${BUNDLE_VERSION} (파일 4개 일치)`);
+  } catch (e) { warnings.push('엔진 버전 확인 실패: ' + String(e && e.message || e).slice(0, 80)); }
   return { batches: v.batches, warnings, usage, model: ai.model, verify: { second: !!vB, transcript: !!tr, total: cc.total, agreed: cc.agreed, flagged: cc.flagged } };
 }
 

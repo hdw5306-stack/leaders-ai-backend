@@ -304,4 +304,5 @@ async function toInput(buffer, filename, mimetype) {
   throw new Error('지원하지 않는 파일 형식입니다. (PDF, Excel, Word, PowerPoint, 한글(hwpx), 이미지)');
 }
 
-module.exports = { toInput };
+const BUNDLE_VERSION = '2026-11-10.5';
+module.exports = { BUNDLE_VERSION, toInput };

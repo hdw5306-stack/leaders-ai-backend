@@ -4,6 +4,7 @@
  */
 const TYPES = ['monthly', 'joiner', 'weekly', 'month13', 'goods', 'tier', 'note'];
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const BUNDLE_VERSION = '2026-11-10.5';   // 함께 올려야 하는 파일들의 버전 표시(일부만 올라갔는지 화면에서 확인용)
 const norm = x => String(x == null ? '' : x).replace(/\s+/g, ' ').trim();
 const squash = x => norm(x).replace(/\s/g, '');
 
@@ -1179,6 +1180,37 @@ function reconcileProducts(rules, trProducts, company, warnings) {
   if (badSet.size) warnings.push(`${company}: 공지 각주와 맞지 않는 상품명 ${badSet.size}개가 남아 있습니다(${Array.from(badSet).slice(0, 8).join(', ')}) — 주력상품 목록을 원문과 직접 대조하세요.`);
 }
 
+// ── AI가 "이름이 불명확하다"며 주력상품 목록에서 상품 하나를 빼 버렸는데, 옮겨 적기(공지 글자 그대로 적은 목록)에는 그 상품이 읽혀 있으면 되돌려 넣습니다.
+//    (상품을 몰래 빼면 그 상품 실적은 시책 계산에서 조용히 빠지므로, 제외보다는 포함하고 확인을 요청하는 쪽이 안전합니다)
+function restoreDroppedProducts(rules, trProducts, company, warnings) {
+  const P = [];
+  (Array.isArray(trProducts) ? trProducts : []).forEach(x => String(x || '').split(/[,，、\n\/]/).forEach(y => { y = norm(y); if (y.length >= 2) P.push(y); }));
+  if (P.length < 4) return;
+  const same = (a, b) => { const x = sqLow(a), y = sqLow(b); return x.length >= 2 && y.length >= 2 && (x.includes(y) || y.includes(x)); };
+  const restored = [];
+  rules.forEach(r => {
+    if (!Array.isArray(r.prod_kw) || r.prod_kw.length < 3) return;
+    const note = String(r.review_note || '');
+    if (!/제외함|불명확|판독|읽지 못/.test(note)) return;
+    const kws = r.prod_kw.flatMap(k => String(k).split('/').map(z => norm(z)).filter(z => z.length >= 2));
+    const hitP = P.filter(p => kws.some(k => same(p, k)));
+    const miss = P.filter(p => !kws.some(k => same(p, k)));
+    // 시책의 상품 목록이 옮겨 적은 목록과 거의 같은 목록(70% 이상 일치)이고 빠진 것이 1~3개일 때만, 그 목록에서 빠진 상품으로 봅니다
+    if (!miss.length || miss.length > 3 || hitP.length / P.length < 0.7) return;
+    r.prod_kw = Array.from(new Set(kws.concat(miss)));
+    r.review_note = note.split(/\s+·\s+/).filter(x => !/제외함|불명확|판독|읽지 못/.test(x)).join(' · ') || undefined;
+    restored.push(...miss.map(m => `${m}(${String(r.title).slice(0, 14)})`));
+  });
+  if (restored.length) warnings.push(`${company}: AI가 이름이 불명확하다며 뺀 주력상품 ${restored.length}개를 공지 옮겨 적기의 글자 그대로 다시 넣었습니다(${restored.slice(0, 4).join(', ')}) — 상품 이름 철자를 원문과 한 번 확인하세요.`);
+}
+
+// ── AI가 스스로 상품·항목을 제외하거나 생략했다고 적은 시책을 한곳에 모아 빠짐없이 보이게 합니다(조용히 사라지는 항목이 없도록)
+function selfExclusionDigest(rules, company, warnings) {
+  const RE = /(?:불명확|불분명|판독|알아보|읽지 못)[^·]{0,60}(?:제외|빼|생략|누락)|제외함|생략함|누락함|제외하였|생략하였/;
+  const hit = rules.filter(r => r.itype !== 'note' && RE.test(String(r.review_note || '')));
+  if (hit.length) warnings.push(`${company}: 【AI가 스스로 제외·생략했다고 적은 항목 ${hit.length}건】 ${hit.slice(0, 4).map(r => `'${String(r.title).slice(0, 18)}'`).join(', ')}${hit.length > 4 ? ' 외' : ''} — 해당 카드의 빨간 안내를 공지 원문과 반드시 대조하세요.`);
+}
+
 function crossCheck(outA, outB, tr, srcText) {
   const warnings = [];
   // 확인용 근거 글: AI 가 옮겨 적은 글(transcript)에 더해, 파일에서 직접 뽑은 원문(PPT·워드·엑셀 등)도 함께 봅니다.
@@ -1236,6 +1268,7 @@ function crossCheck(outA, outB, tr, srcText) {
       if (ba.batch.grp === 'nonlife') { fixSilsonYubyeong(ba.rules, tt + ' ' + String(srcText || ''), ba.batch.company, warnings); splitDriverCap(ba.rules, tt + ' ' + String(srcText || ''), ba.batch.company, warnings); }
       if (tr && ba.batch.grp === 'nonlife') fixProductDigits(ba.rules, tr.products, ba.batch.company, warnings);
       if (tr && ba.batch.grp === 'nonlife') reconcileProducts(ba.rules, tr.products, ba.batch.company, warnings);
+      if (tr && ba.batch.grp === 'nonlife') restoreDroppedProducts(ba.rules, tr.products, ba.batch.company, warnings);
     }
     if (tr) {
       const rt = (tr.rules_text || '') + ' ' + (tr.text || '');
@@ -1311,6 +1344,7 @@ function crossCheck(outA, outB, tr, srcText) {
     hoistCommonNotes(ba.rules, ba.batch.company, warnings);
     if (softTitles.length) warnings.push(`${ba.batch.company}: 두 번째 읽기와 상품군·제외 상품군·건당 한도 표기가 다른 시책 ${softTitles.length}건(${softTitles.slice(0, 3).join(', ')}${softTitles.length > 3 ? ' 외' : ''}) — 금액·기간·지급 시기는 같습니다. 필요하면 공지 공통 기준을 확인하세요.`);
     demoteAiNotes(ba.rules, ba.batch.company, warnings);
+    selfExclusionDigest(ba.rules, ba.batch.company, warnings);
     const only = bGood ? pool.filter(b => !used.has(b)) : [];
     if (only.length) warnings.push(`${ba.batch.company}: 두 번째 읽기에만 나온 항목 ${only.length}건 — ${only.slice(0, 3).map(b => `${b.title.slice(0, 24)}(${b.start}~${b.end})`).join(', ')}${only.length > 3 ? ' 등' : ''}. 공지에서 빠진 시책이 없는지 확인하세요.`);
   }
@@ -1320,4 +1354,4 @@ function crossCheck(outA, outB, tr, srcText) {
   return { warnings, summary, total, agreed, flagged, bUsable };
 }
 
-module.exports = { nameMatches, translit, sqLow, validate, norm, crossCheck, parseWon, applySubstitutions, cleanInsuranceTags, demoteAiNotes };
+module.exports = { BUNDLE_VERSION, selfExclusionDigest, restoreDroppedProducts, nameMatches, translit, sqLow, validate, norm, crossCheck, parseWon, applySubstitutions, cleanInsuranceTags, demoteAiNotes };
