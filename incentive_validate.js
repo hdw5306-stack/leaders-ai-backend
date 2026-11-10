@@ -221,7 +221,8 @@ function listedProducts(r) {
 }
 // 수수료표 상품명에 'N'이 숫자 자리 표시로 들어간 경우(예: 3.N.5.N플러스간편건강보험)는 3.8.5.5·3.6.5.1처럼 N 자리에 숫자가 들어간 이름과 같은 상품으로 봅니다
 function nameMatches(label, tok) {
-  if (sqLow(label).includes(sqLow(tok))) return true;
+  const pl = x => sqLow(x).replace(/플러스/g, 'plus');   // 'Plus'와 '플러스'는 같은 표기
+  if (pl(label).includes(pl(tok))) return true;
   const m = /^((?:\d+|N)(?:\.(?:\d+|N))+)/.exec(String(label).trim().split(/\s+/)[0]);
   if (!m || !/N/.test(m[1])) return false;
   const re = new RegExp('^' + m[1].split('.').map(x => (x === 'N' ? '\\d+' : x)).join('\\.') + '$');
@@ -236,6 +237,7 @@ function linkNamedProducts(rules, labels, company, warnings) {
   sources.forEach(S => {
     const toks = listedProducts(S);
     const linked = [];
+    const before = toks.map(t => covers(S.targets, t));
     toks.forEach(tok => {
       if (covers(S.targets, tok)) return;
       let found = labels.filter(l => nameMatches(l, tok));
@@ -244,32 +246,42 @@ function linkNamedProducts(rules, labels, company, warnings) {
       if (!found.length || found.length > 8) return;
       S.targets = S.targets.concat(found); linked.push(`${tok}(${found.length}개)`);
     });
-    if (!linked.length) return;
-    const all = toks.every(t => covers(S.targets, t));
+    linked.length = 0; toks.forEach((t, k) => { if (!before[k] && covers(S.targets, t)) linked.push(t); });
+    const left = toks.filter(t => !covers(S.targets, t));
+    // [근본 원칙] "상품을 찾지 못함/연결되지 않음/누락" 같은 연결 상태 문장은 AI가 아니라 확정된 연결 결과로 다시 씁니다.
+    // 공지에 상품 이름이 나열된 시책은 연결 여부를 프로그램이 직접 확인할 수 있으므로, AI의 연결 관련 문장은 모두 지우고 사실대로 다시 적습니다.
+    const CLAIM = /찾지 못|대응|연결|라벨|누락|없어|없음|별도 안내/;
+    let touched = false;
     if (S.review_note) {
-      const leftT = toks.filter(t => !covers(S.targets, t));
-      const segs = S.review_note.split(/\s+·\s+/).filter(x => !/대응하는 .*라벨이 없|누락될 수/.test(x));
-      if (leftT.length) segs.push(`확인 필요 — 전략 상품 중 ${leftT.join('·')}에 대응하는 상품 라벨이 없어 해당 상품 실적이 합계에서 누락될 수 있음`);
-      S.review_note = segs.join(' · ') || undefined;
+      const segs = String(S.review_note).split(/\s+·\s+/);
+      const keep = segs.filter(x => !(CLAIM.test(x) && toks.some(t => x.includes(t))) && !/대응하는 .*라벨이 없|누락될 수/.test(x));
+      if (keep.length !== segs.length) touched = true;
+      S.review_note = keep.join(' · ') || undefined;
     }
-    S.memo = norm(((S.memo ? S.memo + ' · ' : '') + `공지에 적힌 상품 이름 ${linked.join(', ')}을(를) 수수료표에서 이름으로 찾아 연결했습니다`).slice(0, 500));
-    warnings.push(`${company}: '${String(S.title).slice(0, 24)}' — 공지 상품 ${linked.join(', ')}을(를) 수수료표 이름으로 연결했습니다(대상 상품 목록 확인)`);
-    if (!all) {
-      const left = toks.filter(t => !covers(S.targets, t));
-      rules.forEach(N => {
-        if (N.itype !== 'note' || N === S) return;
-        const nt = listedProducts(N);
-        if (nt.length >= 2 && UN_RE.test(`${N.review_note || ''} ${N.title || ''} ${N.memo || ''}`) && nt.some(t => left.includes(t))) {
-          N.memo = norm(`${left.join('·')}은(는) 수수료표에 대응 상품이 없어 연결하지 못했습니다. 나머지 상품은 수수료표 이름으로 연결했습니다`).slice(0, 500);
-        }
-      });
+    if (S.memo) {
+      const ss = String(S.memo).split(/(?<=[.。])\s+/);
+      const keepM = ss.filter(x => !(CLAIM.test(x) && (toks.some(t => x.includes(t)) || /연결 가능한|나머지 상품은 별도 안내|연결하지 못|찾지 못/.test(x))));
+      if (keepM.length !== ss.length) touched = true;
+      S.memo = keepM.join(' ');
     }
-    if (all) {
-      for (let i = rules.length - 1; i >= 0; i--) {
-        const N = rules[i];
-        if (N.itype !== 'note' || N === S) continue;
-        const nt = listedProducts(N);
-        if (nt.length >= 2 && UN_RE.test(`${N.review_note || ''} ${N.title || ''} ${N.memo || ''}`) && nt.every(t => covers(S.targets, t))) rules.splice(i, 1);
+    if (left.length && (touched || linked.length)) {
+      S.review_note = [S.review_note, `확인 필요 — 공지 상품 ${left.join('·')}에 대응하는 수수료표 상품이 없어 해당 상품 실적이 합계에서 빠집니다`].filter(Boolean).join(' · ');
+    }
+    if (linked.length) {
+      S.memo = norm(((S.memo ? S.memo + ' · ' : '') + `공지에 적힌 상품 이름 ${linked.join(', ')}을(를) 수수료표에서 이름으로 찾아 연결했습니다`).slice(0, 500));
+      warnings.push(`${company}: '${String(S.title).slice(0, 24)}' — 공지 상품 ${linked.join(', ')}을(를) 수수료표 이름으로 연결했습니다(대상 상품 목록 확인)`);
+    } else if (S.memo !== undefined) S.memo = norm(S.memo).slice(0, 500);
+    // 같은 상품 목록을 안내(note)로 따로 적어 둔 "미연결 상품" 카드도 확정된 연결 결과에 맞춥니다
+    for (let i = rules.length - 1; i >= 0; i--) {
+      const N = rules[i];
+      if (N.itype !== 'note' || N === S) continue;
+      const nt = listedProducts(N);
+      if (nt.length < 2 || !UN_RE.test(`${N.review_note || ''} ${N.title || ''} ${N.memo || ''}`)) continue;
+      if (!nt.every(t => toks.includes(t))) continue;
+      if (nt.every(t => covers(S.targets, t))) rules.splice(i, 1);
+      else {
+        const lf = nt.filter(t => !covers(S.targets, t));
+        N.memo = norm(`${lf.join('·')}은(는) 수수료표에 대응 상품이 없어 연결하지 못했습니다. 나머지 상품은 수수료표 이름으로 연결했습니다`).slice(0, 500);
       }
     }
   });
