@@ -1188,8 +1188,8 @@
         <div class="admin-sub-title" style="font-weight:700;color:var(--navy);">⑥ 보험 약관 올리기 (여러 파일 한 번에)</div>
         <div class="admin-sub-title">약관 PDF를 한꺼번에 선택해서 올립니다. 글자를 그대로 쪽별로 보관하므로 비용이 거의 들지 않고, AI가 요약하지 않습니다. 파일 이름이 상품 이름으로 쓰이니 "보험사_상품명_약관.pdf"처럼 지어 주세요. 이미 올린 파일은 건너뜁니다. (글자가 선택되는 PDF, 파일당 40MB 이하)</div>
         <div class="admin-form">
-          <select id="kTermsCo"><option value="">보험사 선택 (필수)</option><option>삼성생명</option><option>한화생명</option><option>교보생명</option><option>DB생명</option><option>KB라이프생명</option><option>KDB생명</option><option>흥국생명</option><option>동양생명</option><option>ABL생명</option><option>라이나생명</option><option>하나생명</option><option>카디프생명</option><option>IBK생명</option><option>iM라이프생명</option><option>메트라이프생명</option><option>미래에셋생명</option><option>농협생명</option><option>신한라이프</option><option>처브라이프</option><option>푸본현대생명</option><option>AIA생명</option><option>메리츠화재</option><option>KB손해보험</option><option>현대해상</option><option>DB손해보험</option><option>흥국화재</option><option>하나손해보험</option><option>농협손해보험</option><option>삼성화재</option><option>롯데손해보험</option><option>AIG손해보험</option><option>한화손해보험</option></select>
-          <select id="kTermsCat"><option>종신(일반)</option><option>종신(변액)</option><option>연금(일반)</option><option>연금(변액)</option><option>건강보험</option><option>정기보험</option><option>어린이보험</option><option>치아보험</option><option>간병·치매보험</option><option>실손의료보험</option><option>저축보험</option><option>기타</option></select>
+          <select id="kTermsCo"><option value="auto" selected>자동 판별 (권장) — 파일 내용에서 보험사·종류를 읽습니다</option><option value="">보험사 직접 선택…</option><option>삼성생명</option><option>한화생명</option><option>교보생명</option><option>DB생명</option><option>KB라이프생명</option><option>KDB생명</option><option>흥국생명</option><option>동양생명</option><option>ABL생명</option><option>라이나생명</option><option>하나생명</option><option>카디프생명</option><option>IBK생명</option><option>iM라이프생명</option><option>메트라이프생명</option><option>미래에셋생명</option><option>농협생명</option><option>신한라이프</option><option>처브라이프</option><option>푸본현대생명</option><option>AIA생명</option><option>메리츠화재</option><option>KB손해보험</option><option>현대해상</option><option>DB손해보험</option><option>흥국화재</option><option>하나손해보험</option><option>농협손해보험</option><option>삼성화재</option><option>롯데손해보험</option><option>AIG손해보험</option><option>한화손해보험</option></select>
+          <select id="kTermsCat" title="자동 판별을 고르면 이 칸은 쓰이지 않습니다"><option>종신(일반)</option><option>종신(변액)</option><option>연금(일반)</option><option>연금(변액)</option><option>건강보험</option><option>정기보험</option><option>어린이보험</option><option>치아보험</option><option>간병·치매보험</option><option>실손의료보험</option><option>저축보험</option><option>기타</option></select>
           <input type="file" id="kTermsFiles" accept=".pdf,application/pdf" multiple>
           <button type="button" id="kTermsBtn">약관 올리기</button>
         </div>
@@ -3135,8 +3135,8 @@ document.getElementById('kTermsBtn').addEventListener('click', async (ev) => {
   if (!files.length) { kMsg('약관 PDF 파일을 선택해주세요. (여러 개 선택 가능)'); return; }
   const cat = document.getElementById('kTermsCat').value;
   const co = document.getElementById('kTermsCo').value;
-  if (!co) { kMsg('보험사를 먼저 선택해주세요. (보험사별로 약관을 찾는 데 필요합니다)'); return; }
-  const sourceName = `약관 · ${co} · ${cat}`;
+  if (!co) { kMsg('보험사를 선택하거나 "자동 판별"을 골라주세요.'); return; }
+  const sourceName = co === 'auto' ? 'auto' : `약관 · ${co} · ${cat}`;
   kBusy(ev.target, true, true); kOut('');
   const log = []; let ok = 0, skip = 0, fail = 0, pages = 0;
   for (let i = 0; i < files.length; i++) {
@@ -3176,7 +3176,7 @@ document.getElementById('kTermsBtn').addEventListener('click', async (ev) => {
             if (++netFail >= 20) { j = { status: 'error', message: '서버와 연결이 계속 끊겼습니다.' }; break; }
           }
         }
-        if (j && j.status === 'done') { ok++; pages += r.pages || 0; log.push(`완료: ${title} (${r.pages}쪽)`); }
+        if (j && j.status === 'done') { ok++; pages += r.pages || 0; log.push(`완료: ${title} (${r.pages}쪽)${r.detected ? ' → ' + r.detected.sourceName.replace('약관 · ', '') : ''}`); }
         else { fail++; log.push(`실패: ${title} (${(j && j.message) || '시간 초과'})`); }
       }
       else { ok++; pages += r.pages || 0; log.push(`완료: ${title} (${r.pages}쪽)`); }

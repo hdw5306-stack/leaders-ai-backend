@@ -208,6 +208,66 @@ function detectCompany(text) {
   return best ? best.name : null;
 }
 
+// 올린 약관 PDF의 첫 쪽들에서 보험사·상품 종류·상품명을 읽어냅니다 (AI 호출 없음, 비용 0).
+function detectTermsMeta(pages, fileName) {
+  const head = (pages || []).slice(0, 6).map(p => String(p.text || '')).join('\n');
+  const whole = (pages || []).map(p => String(p.text || '')).join('\n');
+  const norm = (s) => String(s).toLowerCase().replace(/\s+/g, '');
+  const h = norm(head), fn = norm(fileName || '');
+  // 보험사: 파일명에 있으면 우선, 없으면 첫 쪽들에서 가장 많이 나온 이름
+  let company = null, bestN = 0;
+  for (const [name, aliases] of COMPANY_ALIASES) {
+    let n = 0;
+    for (const a of aliases) {
+      const al = a.toLowerCase().replace(/\s/g, '');
+      if (fn.includes(al)) n += 100;
+      n += h.split(al).length - 1;
+    }
+    if (n > bestN) { bestN = n; company = name; }
+  }
+  // 상품명 후보: "무배당/(2403)/보험·연금·저축" 이 들어간 짧은 줄
+  if (!company || bestN < 3) {
+    // 첫 쪽들에 보험사 이름이 없으면 문서 전체에서 가장 많이 나온 이름을 씁니다
+    const w = norm(whole); let c2 = null, n2 = 0;
+    for (const [name, aliases] of COMPANY_ALIASES) {
+      let n = 0; for (const a of aliases) n += w.split(a.toLowerCase().replace(/\s/g, '')).length - 1;
+      if (n > n2) { n2 = n; c2 = name; }
+    }
+    if (c2 && n2 > bestN) { company = c2; bestN = n2; }
+    if ((!company || bestN < 1) && /삼성(?!화재)[가-힣]*(종신|연금|보험|저축|정기)/.test(head)) { company = '삼성생명'; bestN = 1; }
+  }
+  { const first = norm(head.split('\n').slice(0, 40).join(' '));
+    if (/삼성(?!화재)[가-힣]{0,6}(종신|연금|보험|저축|정기|리빙|유니버설)/.test(first) && !/삼성화재/.test(first)) { company = '삼성생명'; bestN = Math.max(bestN, 1); } }
+  const lines = head.split('\n').map(s => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const cand = lines.filter(l => l.length >= 6 && l.length <= 70 && /(보험|연금|저축)/.test(l) && /(무배당|유배당|\(\d{4}\)|\[)/.test(l) && !/(감사|드립니다|입니다|합니다|됩니다|하며|으며|이며|니다\.|상품입니다|방법|경우|기준|계약자|보험료|지급|한다|해야|말씀)/.test(l));
+  const m2 = head.match(/[가-힣A-Za-z0-9 ]{2,30}(?:보험|연금)\s*\(\d{4}\)(?:\([^)]{1,15}\))*/);
+  if (!cand.length && m2) cand.push(m2[0].replace(/\s+/g, ' ').trim());
+  const productName = cand.length ? cand[0].replace(/\s*(보험)?약관.*$/, '').replace(/^삼성\s+/, '삼성').trim() : null;
+  // 종류: 상품명·파일명을 먼저 보고, 없으면 첫 쪽 앞부분
+  const probe = norm((productName || '') + ' ' + (fileName || ''));
+  const probe2 = probe || norm(lines.slice(0, 12).join(' '));
+  const has = (re, s) => re.test(s);
+  const rules = [
+    ['실손의료보험', /실손|실비/], ['종신(변액)', /변액.*종신|종신.*변액|변액유니버설/], ['연금(변액)', /변액.*연금|연금.*변액|탄탄한변액/],
+    ['연금(일반)', /연금/], ['종신(일반)', /종신|유니버설|리빙케어/], ['간병·치매보험', /간병|치매|장기요양/], ['어린이보험', /어린이|자녀|태아|꿈나무/],
+    ['치아보험', /치아|치과|임플란트/], ['정기보험', /정기보험|정기\(|정기특약/], ['저축보험', /저축|적금|플래티넘/], ['건강보험', /건강보험|암보험|CI보험|질병보험|상해보험|통합보험|건강/i],
+  ];
+  let category = null;
+  for (const [c, re] of rules) { if (has(re, probe2)) { category = c; break; } }
+  if (!category) {
+    // 상품명을 못 찾았을 때: 첫 쪽들에서 종류 낱말이 가장 많이 나온 것을 고릅니다
+    const body = (pages || []).slice(0, 15).map(p => String(p.text || '')).join('\n').replace(/건강정보|건강상태/g, '');
+    let bestC = null, bestK = 0;
+    for (const [c, re] of rules) {
+      const g = new RegExp(re.source, 'g'); const k = (body.match(g) || []).length;
+      if (k > bestK) { bestK = k; bestC = c; }
+    }
+    category = bestC;
+    if ((category === '연금(일반)' || category === '종신(일반)') && (body.match(/변액/g) || []).length >= 3) category = category.replace('일반', '변액');
+  }
+  return { company: bestN >= 1 ? company : null, category: category || '기타', productName };
+}
+
 // 질문과 의미가 가까운 노트/페이지를 찾습니다.
 async function search(query, k = 6, minScore = 0.3, opts = {}) {
   const { items } = await loadCache();
@@ -807,20 +867,32 @@ router.post('/text', async (req, res) => {
 // PDF → (표·숫자 자료) 페이지별로 그대로 보관, 또는 (글 위주) 읽고 정리
 router.post('/pdf', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '파일을 선택해주세요.' });
-  const sourceName = String(req.body.sourceName || '').trim();
+  let sourceName = String(req.body.sourceName || '').trim();
   const isTerms = req.body.docType === 'terms'; // 약관 원문: 글자만 읽어 쪽별로 그대로 보관 (요약·변형 없음)
-  const company = String(req.body.company || '').trim().slice(0, 40) || null;
+  let company = String(req.body.company || '').trim().slice(0, 40) || null;
+  const autoMeta = isTerms && company === 'auto'; // 보험사·종류를 파일 내용에서 알아서 판별
   const mode = req.body.mode === 'notes' && !isTerms ? 'notes' : 'data'; // 'vision'은 아래에서 따로 처리
-  if (!sourceName) return res.status(400).json({ error: '자료 이름을 입력해주세요.' });
+  if (!sourceName && !autoMeta) return res.status(400).json({ error: '자료 이름을 입력해주세요.' });
   try {
-    if (req.body.skipExisting === '1' && req.body.title) {
-      const ex = await pool.query('SELECT 1 FROM knowledge_docs WHERE source_name = $1 AND title = $2 LIMIT 1', [sourceName, String(req.body.title).slice(0, 300)]);
+    let autoTitle = null, pg0 = null;
+    if (autoMeta) {
+      pg0 = await extractPdfPages(req.file.buffer);
+      const m = detectTermsMeta(pg0, String(req.body.title || req.file.originalname || ''));
+      if (!m.company) return res.status(422).json({ error: '보험사를 판별하지 못했습니다. 보험사를 직접 선택해서 다시 올려주세요.' });
+      company = m.company;
+      sourceName = `약관 · ${m.company} · ${m.category}`;
+      const base = String(req.body.title || req.file.originalname || '').replace(/\.pdf$/i, '');
+      if (m.productName && !base.replace(/\s/g, '').includes(m.productName.replace(/\s/g, '').slice(0, 8))) autoTitle = `${m.productName} (${base})`.slice(0, 200);
+      else autoTitle = base.slice(0, 200);
+    }
+    if (req.body.skipExisting === '1' && (autoTitle || req.body.title)) {
+      const ex = await pool.query('SELECT 1 FROM knowledge_docs WHERE source_name = $1 AND title = $2 LIMIT 1', [sourceName, String(autoTitle || req.body.title).slice(0, 300)]);
       if (ex.rows.length) return res.json({ ok: true, skipped: true, reason: '이미 올린 파일입니다.' });
     }
-    const pages = await extractPdfPages(req.file.buffer);
+    const pages = pg0 || await extractPdfPages(req.file.buffer);
     const total = pages.reduce((n, p) => n + p.text.length, 0);
     if (total < 200) return res.status(422).json({ error: '글자를 거의 읽지 못했습니다. 사진/스캔 PDF는 지원하지 않습니다.' });
-    const title = String(req.body.title || req.file.originalname || sourceName).slice(0, 200);
+    const title = String(autoTitle || req.body.title || req.file.originalname || sourceName).slice(0, 200);
     let notice = String(req.body.notice || '').trim();
     if (!notice && /사내\s*교육용/.test(pages.slice(0, 3).map(p => p.text).join(' '))) {
       notice = '사내 교육용 자료입니다. 보험 안내자료로 사용하거나 외부에 공유할 수 없습니다. 고객 안내는 가입설계서·상품설명서·약관 기준으로 하세요.';
@@ -833,7 +905,7 @@ router.post('/pdf', upload.single('file'), async (req, res) => {
       const job = { id, status: 'learning', total: 0, done: 0, learned: 0, notes: 0, skipped: 0, failed: 0, log: [], message: '', pages: pages.length };
       jobs.set(id, job);
       runTermsJob(job, { pages, sourceName, title, notice, userId: req.userId, key, company });
-      return res.json({ ok: true, jobId: id, pages: pages.length });
+      return res.json({ ok: true, jobId: id, pages: pages.length, detected: autoMeta ? { company, sourceName, title } : undefined });
     }
     if (req.body.mode === 'vision' && !isTerms) {
       const id = String(++jobSeq);
