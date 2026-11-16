@@ -975,12 +975,18 @@
           <div class="pt-field"><label>입원 / 통원</label><select id="slType"><option value="in">입원</option><option value="out">통원(외래)</option></select></div>
           <div class="pt-field"><label>의료기관</label><select id="slHosp"><option value="clinic">의원</option><option value="hospital" selected>병원</option><option value="general">종합병원</option><option value="tertiary">상급종합병원</option></select></div>
         </div>
-        <div class="pt-grid" id="slG3" style="margin-top:10px;display:none">
-          <div class="pt-field"><label>급여 자기부담률(증권)</label><select id="slG3Cov"><option value="0.1">10%</option><option value="0.2">20%</option></select></div>
-          <div class="pt-field"><label>비급여 자기부담률(증권)</label><select id="slG3Non"><option value="0.2">20%</option><option value="0.3">30%</option></select></div>
+        <div class="pt-grid" id="slPol" style="display:none;margin-top:8px">
+          <div class="pt-field"><label>증권의 입원 가입금액 (원)</label><input class="sl-money" id="slPolCap" inputmode="numeric" placeholder="비우면 0505판 3,000만원"></div>
+          <div class="pt-field"><label>증권의 통원 공제금액 (원/1일)</label><input class="sl-money" id="slPolDed" inputmode="numeric" placeholder="비우면 5,000원"></div>
+          <div class="pt-field"><label>통원 1일 한도 (원)</label><input class="sl-money" id="slPolDay" inputmode="numeric" placeholder="비우면 10만원"></div>
         </div>
+        <label class="cr-consent" id="slRider" style="display:none"><span style="display:block"><b>가입한 특약만 체크</b> (3세대 기본형은 도수·주사·MRI 비급여를 보상하지 않고 특약 가입 시에만 보상)<br>
+          <label style="display:inline-flex;gap:5px;margin-right:10px"><input type="checkbox" id="slRMan" checked> 도수·충격파·증식</label>
+          <label style="display:inline-flex;gap:5px;margin-right:10px"><input type="checkbox" id="slRInj" checked> 비급여 주사</label>
+          <label style="display:inline-flex;gap:5px"><input type="checkbox" id="slRMri" checked> MRI/MRA</label></span></label>
         <div class="pt-grid" style="margin-top:10px">
           <div class="pt-field"><label>급여 본인부담금 (원)</label><input class="sl-money" id="slCov" inputmode="numeric" placeholder="예: 1,000,000"></div>
+          <div class="pt-field" id="slRoomWrap" style="display:none"><label>상급병실료 차액 (원) / 입원일수</label><div style="display:flex;gap:6px"><input class="sl-money" id="slRoom" inputmode="numeric" placeholder="차액 합계"><input id="slDays" inputmode="numeric" placeholder="일수" style="max-width:80px"></div></div>
           <div class="pt-field" id="slPharmWrap"><label>처방조제(약국) 급여 본인부담금 (원)</label><input class="sl-money" id="slPharm" inputmode="numeric" placeholder="예: 8,000"></div>
           <div class="pt-field"><label>비급여 – 일반 (원)</label><input class="sl-money" id="slNonGen" inputmode="numeric" placeholder="예: 2,000,000"></div>
           <div class="pt-field"><label>비급여 – 도수·체외충격파·증식치료 (원)</label><input class="sl-money" id="slNonMan" inputmode="numeric"></div>
@@ -988,8 +994,8 @@
           <div class="pt-field"><label>비급여 – MRI/MRA (원)</label><input class="sl-money" id="slNonMri" inputmode="numeric"></div>
         </div>
         <label class="cr-consent" id="slSev"><input type="checkbox" id="slSevChk"> <span>5세대 <b>중증(산정특례 대상 질환)</b> 치료입니다. (체크하지 않으면 비중증 비급여로 계산)</span></label>
-        <div class="pt-field" id="slNhiWrap" style="margin-top:8px;display:none"><label>5세대 급여 통원: 건강보험 본인부담률(%) — 해당 시만, 모르면 비움</label><input id="slNhi" inputmode="decimal" placeholder="예: 5"></div>
-        <label class="cr-consent" id="slCapWrap"><input type="checkbox" id="slCap"> <span>증권 약관에 <b>"연간 입원 자기부담금 200만원 초과분 보상"</b> 조항이 있습니다. (약관에서 확인한 경우에만 체크)</span></label>
+        <div class="pt-field" id="slNhiWrap" style="margin-top:8px;display:none"><label>5세대 급여 통원: 건강보험 본인부담률(%) = 영수증의 「일부본인부담 항목 본인부담금 ÷ (본인부담금+공단부담금)」 — 모르면 비움</label><input id="slNhi" inputmode="decimal" placeholder="예: 5"></div>
+        <label class="cr-consent" id="slCapWrap"><input type="checkbox" id="slCap"> <span><b>연간 입원 자기부담금 200만원 초과분 보상</b> 조항 적용 (2013~2021.6 메리츠 약관에서 확인됨. 4세대 등은 약관에 있을 때만 체크)</span></label>
         <details style="margin-top:10px"><summary style="cursor:pointer;font-size:13px;color:var(--navy)">올해 이미 받은 보험금 입력 (한도 차감용, 선택)</summary>
           <div class="pt-grid" style="margin-top:8px">
             <div class="pt-field"><label>급여 보험금 누적 (원)</label><input class="sl-money" id="slUCov" inputmode="numeric"></div>
@@ -1441,31 +1447,40 @@ var SILSON = (function () {
     fsc4: { t: '금융위원회 보도자료 「제4세대 실손의료보험 출시」(2021.7)', u: 'https://www.fsc.go.kr/no010101/76157' },
     knia4: { t: '손해보험협회 공시실 「실손의료보험(4세대)」', u: 'https://kpub.knia.or.kr/productDisc/lostHealth/lostHealth4thStandard.do' },
     knia5: { t: '손해보험협회 공시실 「실손의료보험 안내」(5세대)', u: 'https://kpub.knia.or.kr/productDisc/lostHealth/lostHealthInfo.do' },
+    mer: { t: '메리츠화재 실손의료비보험 약관 원문(1301·1404·1509·1601·1604·1701·1801·1804·노후·유병력자·계약전환용·2610)', u: '' },
     kiri: { t: '보험연구원 「실손의료보험 현황 및 문제점」(2018)', u: 'https://www.kiri.or.kr/pdf/%EC%97%B0%EA%B5%AC%EC%9E%90%EB%A3%8C/%EC%97%B0%EA%B5%AC%EB%B3%B4%EA%B3%A0%EC%84%9C/nre2018-06_03.pdf' },
     fsc3: { t: '금융위원회 보도자료 「착한 실손의료보험」(2017.4)', u: 'https://www.korea.kr/briefing/pressReleaseView.do?newsId=156193143' }
   };
-  /* 세대 정의: conf = official(공식자료로 확인) / partial(일부만 확인) / ref(민간 정리 위주, 약관 대조 필수) */
+  /* 세대 정의: conf = doc(메리츠 약관 원문 확인) / official(금융위·손보협회 공식자료) / partial(일부만 확인) / ref(참고용) */
   var GENS = {
-    g1: { id: 'g1', name: '1세대 (구실손)', period: '~2009.9', conf: 'ref',
-      note: '2009년 9월 이전 가입. 회사·상품마다 약관 차이가 커서 증권 약관을 반드시 확인해야 합니다.',
-      src: ['kiri'], variants: [
-        { id: 'life', name: '생명보험사 (80% 보장, 연 3천만원 한도)' },
-        { id: 'nonlife', name: '손해보험사 (100% 보장, 한도는 회사별)' }] },
-    g2: { id: 'g2', name: '2세대 (표준화 실손 1기)', period: '2009.10~2013.3', conf: 'partial',
-      note: '2009년 10월 표준화. 입원 90% 보장, 연 5천만원(보험연구원). 통원 공제는 민간 정리 기준입니다.',
+    g1: { id: 'g1', name: '1세대 (구실손)', period: '~2009.9', conf: 'partial',
+      note: '메리츠 닥터케어건강보험0505(2005년)·100세건강보험0807(2008년) 약관 원문 확인: 입원은 급여 본인부담금+비급여 100%(병실료 차액 50%), 통원은 1일 공제 후 100%. 0505판은 입원 3천만원·통원 5천원 공제·1일 10만원 고정, 0807판은 한도와 공제가 증권의 가입금액·공제금액입니다. 증권 값을 아래 칸에 넣으세요. 다른 회사·시기 상품은 증권 약관 대조가 필요합니다.',
+      src: ['mer'], variants: [
+        { id: 'nonlife', name: '질병입원·통원 (메리츠 0505·0807 약관)' },
+        { id: 'inj2', name: '상해입원·통원 (메리츠 0807 약관)' },
+        { id: 'injury', name: '상해 의료실비 (메리츠 0505·0807 약관)' },
+        { id: 'life', name: '생명보험사 (80% 보장, 연 3천만원 — 보험연구원 참고)' }] },
+    g2: { id: 'g2', name: '2세대 (표준화 초기)', period: '2009.10~2012.12', conf: 'partial',
+      note: '2009년 10월 표준화. 입원 90% 보장·연 5천만원(보험연구원). 이 시기 약관 원문은 확인하지 못해 통원 공제는 2013년 약관 기준으로 가정했습니다.',
       src: ['kiri'], variants: [{ id: 'std90', name: '입원 90% 보장형' }] },
-    g2b: { id: 'g2b', name: '2세대 (표준화 실손 2기)', period: '2013.4~2017.3', conf: 'partial',
-      note: '2013년 개정. 표준형은 80% 보장·통원 병원규모별 공제와 20% 중 큰 금액, 선택형은 90% 보장·정액 공제(보험연구원).',
-      src: ['kiri'], variants: [{ id: 'std', name: '표준형 (자기부담 20%)' }, { id: 'sel', name: '선택형 (자기부담 10%)' }] },
-    g3: { id: 'g3', name: '3세대 (신실손/착한실손)', period: '2017.4~2021.6', conf: 'partial',
-      note: '급여 10%·20%, 비급여 20%, 도수·주사·MRI는 특약(자기부담 30%)으로 분리(금융위). 자기부담률은 증권에서 확인해 선택하세요.',
-      src: ['fsc4', 'fsc3', 'kiri'], variants: [{ id: 'x', name: '증권의 자기부담률 선택' }] },
+    g2b: { id: 'g2b', name: '2세대 (표준화 개정)', period: '2013.1~2017.3', conf: 'doc',
+      note: '메리츠 약관(1301~1701판) 원문 확인. 입원: 표준형 80% / 선택형Ⅰ 90% / 선택형Ⅱ(2015.9~) 급여 90%·비급여 80%, 자기부담 연 200만원 초과분 보상, 상급병실료 차액 50%(1일 평균 10만원 한도). 통원: 병원규모별 공제.',
+      src: ['mer'], variants: [{ id: 'std', name: '표준형 (자기부담 20%)' }, { id: 'sel1', name: '선택형Ⅰ (자기부담 10%)' }, { id: 'sel2', name: '선택형Ⅱ (급여 10%·비급여 20%, 2015.9~)' }] },
+    g3: { id: 'g3', name: '3세대 (신실손·착한실손)', period: '2017.4~2021.6', conf: 'doc',
+      note: '메리츠 약관(1801·1804판, 계약전환용 포함) 원문 확인. 기본형(표준형 20% / 선택형Ⅱ 급여 10%·비급여 20%) + 특약 3종(도수·체외충격파·증식 350만원·50회, 주사료 250만원·50회, MRI 300만원). 특약 미가입 시 해당 비급여는 보상하지 않습니다.',
+      src: ['mer', 'fsc4'], variants: [{ id: 'std', name: '표준형 (자기부담 20%)' }, { id: 'sel2', name: '선택형Ⅱ (급여 10%·비급여 20%)' }] },
     g4: { id: 'g4', name: '4세대 실손', period: '2021.7~2026.5', conf: 'official',
-      note: '급여 20%, 비급여 30%(특약), 통원 최소 공제 급여 1만·2만원, 비급여 3만원(금융위·손해보험협회).',
+      note: '급여 20%, 비급여 30%(특약), 통원 최소 공제 급여 1만·2만원, 비급여 3만원(금융위·손해보험협회). 메리츠 4세대 약관 원문은 받지 못해 공식자료 기준입니다.',
       src: ['fsc4', 'knia4'], variants: [{ id: 'x', name: '표준' }] },
-    g5: { id: 'g5', name: '5세대 실손', period: '2026.5.6~', conf: 'official',
-      note: '급여 20%, 중증 비급여(특약1) 30%, 비중증 비급여(특약2) 50%. 도수·체외충격파·비급여 주사는 비중증에서 보장 제외(금융위).',
-      src: ['fsc5', 'knia5'], variants: [{ id: 'x', name: '표준' }] }
+    g5: { id: 'g5', name: '5세대 실손', period: '2026.5.6~', conf: 'doc',
+      note: '메리츠 2610판 약관 원문과 금융위 자료로 확인. 급여 20%, 중증 비급여(특약1) 30%, 비중증 비급여(특약2) 50%. 도수·체외충격파·비급여 주사는 비중증에서 보장 제외.',
+      src: ['mer', 'fsc5', 'knia5'], variants: [{ id: 'x', name: '표준' }] },
+    noo: { id: 'noo', name: '노후실손 (50세 이상 전용)', period: '2014.8~', conf: 'doc',
+      note: '메리츠 노후실손 약관(1408~1804판) 원문 확인. 입원 30만원·통원 3만원 우선공제 후 급여 80%·비급여 70% 보상, 연 한도 1억원, 통원 회당 100만원, 입원 자기부담 연 500만원 초과분 보상, 요양병원 제외.',
+      src: ['mer', 'knia5'], variants: [{ id: 'x', name: '표준' }] },
+    yub: { id: 'yub', name: '유병력자 실손', period: '2018.4~', conf: 'doc',
+      note: '메리츠 유병력자 약관(1804·2610판) 원문 확인. 입원 공제 Max(10만원, 30%), 통원 Max(2만원, 30%) 후 보상, 입원 연 5천만원, 도수·주사·MRI 등 비급여 3종은 보상 제외.',
+      src: ['mer', 'knia5'], variants: [{ id: 'x', name: '표준' }] }
   };
 
   function pickGen(dateStr) {
@@ -1473,7 +1488,7 @@ var SILSON = (function () {
     var d = String(dateStr).slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
     if (d < '2009-10-01') return 'g1';
-    if (d < '2013-04-01') return 'g2';
+    if (d < '2013-01-01') return 'g2';
     if (d < '2017-04-01') return 'g2b';
     if (d < '2021-07-01') return 'g3';
     if (d < '2026-05-06') return 'g4';
@@ -1486,146 +1501,185 @@ var SILSON = (function () {
   var mn = Math.min, mx = Math.max;
 
   function minDed(gen, hosp) {
+    /* 4·5세대: 병·의원 1만, 종합병원·상급종합 2만. 2·3세대(약관 표): 의원 1만, 병원·종합병원 1.5만, 상급종합 2만 */
     if (gen === 'g4' || gen === 'g5') return (hosp === 'general' || hosp === 'tertiary') ? 20000 : 10000;
-    /* 구세대: 의원 1만 / 병원 1.5만 / 종합·상급 2만 (보험연구원 표준형·선택형 공제) */
-    return { clinic: 10000, hospital: 15000, general: 20000, tertiary: 20000 }[hosp] || 10000;
+    return { clinic: 10000, hospital: 15000, general: 15000, tertiary: 20000 }[hosp] || 10000;
   }
+  var RIDERS = [['도수·체외충격파·증식치료', 'manual', 3500000], ['비급여 주사료', 'inj', 2500000], ['비급여 MRI/MRA', 'mri', 3000000]];
 
   function calc(inp) {
     var gen = inp.gen, v = inp.variant || 'x', isIn = inp.type === 'in', hosp = inp.hosp || 'hospital';
-    var cov = W(inp.cov), ph = isIn ? 0 : W(inp.pharm);
-    var gen_ = W(inp.nonGen), man = W(inp.nonManual), inj = W(inp.nonInj), mri = W(inp.nonMri);
+    var amt = { cov: W(inp.cov), pharm: isIn ? 0 : W(inp.pharm), gen: W(inp.nonGen), manual: W(inp.nonManual), inj: W(inp.nonInj), mri: W(inp.nonMri) };
     var u = inp.used || {};
     var used = { cov: W(u.cov), non: W(u.non), manual: W(u.manual), inj: W(u.inj), mri: W(u.mri), self: W(u.self) };
-    var sev = !!inp.severe;
-    var lines = [], warns = [], flags = [];
-    var bill = cov + ph + gen_ + man + inj + mri;
-    var selfAmt = 0, pay = 0;
+    var sev = !!inp.severe, room = isIn ? W(inp.room) : 0, days = W(inp.days);
+    var has = inp.riders || { manual: true, inj: true, mri: true };
+    var lines = [], warns = [];
+    var bill = amt.cov + amt.pharm + amt.gen + amt.manual + amt.inj + amt.mri + room;
+    var pay = 0;
     function L(label, billAmt, payAmt, how) { lines.push({ label: label, bill: billAmt, pay: payAmt, how: how }); }
-
     if (bill <= 0) return { ok: false, error: '금액을 하나 이상 입력해 주세요.' };
+    var nonRider = amt.manual + amt.inj + amt.mri;
 
-    /* ---------- 1~2세대: 급여+비급여 합산 ---------- */
-    if (gen === 'g1' || gen === 'g2' || gen === 'g2b') {
-      var rate, fixedOnly = false, annual = 0, visitCap = 0, pharmMin = 8000, cap200 = false, noDedPoint = false;
-      if (gen === 'g1') {
-        rate = v === 'life' ? 0.2 : 0;
-        annual = v === 'life' ? 30000000 : 0;
-        noDedPoint = true;
-        warns.push('1세대는 통원 공제금액이 약관마다 달라 5,000원(민간 정리)으로 가정했습니다. 증권 약관의 공제금액으로 다시 확인하세요.');
-      } else if (gen === 'g2') {
-        rate = 0.1; annual = 50000000; visitCap = 300000;
-        warns.push('2세대(2009.10~2013.3) 통원 공제·회당 한도(30만원)는 보험연구원 표에 없어 민간 정리 기준으로 가정했습니다.');
-      } else {
-        rate = v === 'sel' ? 0.1 : 0.2; fixedOnly = v === 'sel'; visitCap = 300000;
-        warns.push('통원 회당 한도(외래+처방 합산 30만원)는 민간 정리 기준입니다. 약관을 확인하세요.');
-      }
-      cap200 = !!inp.cap200 && gen !== 'g1';
-      var nonAll = gen_ + man + inj + mri, base = cov + nonAll;
-      if (isIn) {
-        var s = base * rate, p = base - s;
-        if (cap200 && s > 0) {
-          var allowed = mx(0, 2000000 - used.self), eff = mn(s, allowed);
-          if (s > eff) { p += (s - eff); warns.push('입력하신 대로 연간 입원 자기부담금 200만원 상한을 적용해 ' + fmt(s - eff) + '를 추가 보상으로 계산했습니다. 약관에서 상한제 적용 여부를 확인하세요.'); }
-        }
-        L('입원 의료비(급여+비급여 합산)', base, p, fmt(base) + ' × (1 − ' + pc(rate) + ')');
-        pay = p;
-        if (annual) { var rem = mx(0, annual - used.cov - used.non); if (pay > rem) { warns.push('연간 보상한도(' + fmt(annual) + ') 남은 금액 ' + fmt(rem) + '까지만 지급되도록 줄였습니다.'); pay = rem; lines.push({ label: '연간 한도 적용', bill: 0, pay: pay - p, how: '남은 한도 ' + fmt(rem) }); } }
-      } else {
-        var ob = cov + nonAll, md = minDed(gen, hosp), ded = fixedOnly ? md : mx(md, ob * rate);
-        if (noDedPoint) ded = mx(5000, ob * rate);
-        var p1 = mx(0, ob - ded);
-        L('외래(' + HOSP[hosp] + ')', ob, p1, fmt(ob) + ' − 공제 ' + fmt(ded) + (fixedOnly ? '(정액)' : '(' + fmt(md) + ' 또는 ' + pc(rate) + ' 중 큰 금액)'));
-        var p2 = 0;
-        if (ph > 0) { var pd = fixedOnly ? pharmMin : mx(pharmMin, ph * rate); if (noDedPoint) pd = mx(5000, ph * rate); p2 = mx(0, ph - pd); L('처방조제(약국)', ph, p2, fmt(ph) + ' − 공제 ' + fmt(pd)); }
-        pay = p1 + p2;
-        if (visitCap && pay > visitCap) { lines.push({ label: '회당 한도 적용', bill: 0, pay: visitCap - pay, how: '외래+처방 합산 ' + fmt(visitCap) }); pay = visitCap; }
-      }
-      selfAmt = bill - pay;
+    /* ---------- 상급병실료 차액 (2~3세대 약관: 차액의 50%, 1일 평균 10만원 한도) ---------- */
+    function roomPay() {
+      if (room <= 0) return 0;
+      var p = room * 0.5, capd = days > 0 ? 100000 * days : 0;
+      if (days > 0 && p > capd) p = capd;
+      if (days <= 0) warns.push('입원일수를 입력하면 상급병실료 차액의 1일 평균 10만원 한도를 적용합니다. 지금은 한도 없이 50%만 계산했습니다.');
+      L('상급병실료 차액', room, p, fmt(room) + ' × 50%' + (days > 0 ? ', 1일 평균 10만원(' + days + '일) 한도' : ''));
+      return p;
     }
 
-    /* ---------- 3세대: 급여/비급여 분리 + 특약 3종 ---------- */
-    else if (gen === 'g3') {
-      var rc = inp.g3Cov === 0.2 ? 0.2 : 0.1, rn = inp.g3Non === 0.3 ? 0.3 : 0.2, rr = 0.3;
-      var rider = [['도수·체외충격파·증식치료', man, 'manual', 3500000], ['비급여 주사료', inj, 'inj', 2500000], ['비급여 MRI/MRA', mri, 'mri', 3000000]];
-      warns.push('3세대의 통원 공제(비급여 특약 2만원)와 회당 한도(30만원)는 공식 표에 없어 민간 정리 기준으로 가정했습니다.');
-      var total3 = 0;
-      if (isIn) {
-        var pc3 = cov * (1 - rc); L('급여', cov, pc3, fmt(cov) + ' × (1 − ' + pc(rc) + ')'); total3 += pc3;
-        var pn3 = gen_ * (1 - rn); if (gen_ > 0) { L('비급여(일반)', gen_, pn3, fmt(gen_) + ' × (1 − ' + pc(rn) + ')'); total3 += pn3; }
-        rider.forEach(function (r) { if (r[1] > 0) { var pr = mn(r[1] * (1 - rr), mx(0, r[3] - used[r[2]])); L('특약 · ' + r[0], r[1], pr, fmt(r[1]) + ' × (1 − 30%), 연 한도 ' + fmt(r[3]) + ' 이내'); total3 += pr; } });
+    /* ---------- 1~3세대 공통(합산 자기부담 구조) ---------- */
+    if (gen === 'g1' && v !== 'life') {
+      var all1 = amt.cov + amt.gen + nonRider;
+      var pCap = W(inp.polCap), pDed = W(inp.polDed), pDay = W(inp.polDay);
+      var usedDef = (!pCap && isIn) || (!pDed && !isIn);
+      if (v === 'injury') {
+        if (isIn) { /* 상해 의료실비는 입원/통원 구분 없이 실제 부담한 의료비 전액 */ }
+        var tot1 = all1 + amt.pharm;
+        L('상해 의료실비 (실제 부담한 의료비 전액)', tot1, tot1, fmt(tot1) + ' × 100%');
+        pay = tot1;
+        if (room > 0) { warns.push('상해 의료실비는 병실료 차액을 보상하지 않습니다(의사가 상급병실 입원이 필요하다고 판단한 경우 등 예외). 차액은 계산에서 제외했습니다.'); }
+        if (pCap && pay > pCap) { lines.push({ label: '1사고당 가입금액 한도', bill: 0, pay: pCap - pay, how: '증권의 의료비가입금액' }); pay = pCap; }
+        else if (!pCap) warns.push('상해 의료실비는 1사고당 "의료비가입금액" 한도, 사고일부터 180일 한도입니다. 아래 칸에 증권의 가입금액을 넣으면 한도를 적용합니다. 건강보험 미적용(자동차·산재 등)이면 50%만 보상합니다.');
+      } else if (isIn) {
+        L((v === 'inj2' ? '상해입원' : '질병입원') + ' 급여 본인부담금 + 비급여 (전액)', all1, all1, fmt(all1) + ' × 100%');
+        pay = all1;
+        if (room > 0) { var rp1 = room * 0.5; L('병실료 차액(2인실 기준 차액의 50%)', room, rp1, fmt(room) + ' × 50%'); pay += rp1; }
+        var cap1 = pCap || (v === 'inj2' ? 0 : 30000000);
+        if (cap1) { var rem1 = mx(0, cap1 - used.cov - used.non); if (pay > rem1) { lines.push({ label: '가입금액 한도 ' + fmt(cap1) + ' 적용', bill: 0, pay: rem1 - pay, how: (v === 'inj2' ? '1사고당·사고일부터 365일' : '동일질병 365일, 퇴원 후 180일 경과 시 새 질병') }); warns.push('한도(' + fmt(cap1) + ') 남은 금액 ' + fmt(rem1) + '까지만 지급되도록 줄였습니다.'); pay = rem1; } }
+        else warns.push('1사고당 가입금액 한도는 증권 값을 아래 칸에 넣어야 적용됩니다.');
+        if (usedDef && v !== 'inj2') warns.push('증권의 입원 가입금액을 입력하지 않아 0505판 약관의 3,000만원으로 계산했습니다(0807판은 가입금액이 한도).');
+        warns.push(v === 'inj2' ? '상해입원은 사고일부터 365일 한도입니다.' : '질병입원은 정신과질환·치과·디스크·비만치료·불임 등 보상하지 않는 질병이 있고, 0807판은 청약일 전 5년 이내 진단·치료받은 질병도 제외합니다. 병실료 차액은 특실·1인실 사용 시 2인실 기준입니다.');
       } else {
-        var md3 = minDed(gen, hosp), d3 = mx(md3, cov * rc), p3 = mx(0, cov - d3);
-        if (cov > 0) L('급여 외래(' + HOSP[hosp] + ')', cov, p3, fmt(cov) + ' − 공제 ' + fmt(d3) + '(' + fmt(md3) + ' 또는 ' + pc(rc) + ' 중 큰 금액)'); total3 += p3;
-        if (ph > 0) { var pd3 = mx(8000, ph * rc), pp3 = mx(0, ph - pd3); L('처방조제(약국)', ph, pp3, fmt(ph) + ' − 공제 ' + fmt(pd3)); total3 += pp3; }
-        if (gen_ > 0) { var pn = gen_ * (1 - rn); L('비급여(일반)', gen_, pn, fmt(gen_) + ' × (1 − ' + pc(rn) + ')'); total3 += pn; }
-        rider.forEach(function (r) { if (r[1] > 0) { var dd = mx(20000, r[1] * rr), pr = mn(mx(0, r[1] - dd), mx(0, r[3] - used[r[2]])); L('특약 · ' + r[0], r[1], pr, fmt(r[1]) + ' − 공제 ' + fmt(dd) + ', 연 한도 ' + fmt(r[3]) + ' 이내'); total3 += pr; } });
-        if (total3 > 300000) { lines.push({ label: '회당 한도 적용', bill: 0, pay: 300000 - total3, how: '외래+처방 합산 ' + fmt(300000) }); total3 = 300000; }
+        var dd1 = pDed || 5000, dc1 = pDay || (v === 'inj2' ? 0 : 100000);
+        var day1 = all1 + amt.pharm, p1x = mx(0, day1 - dd1); if (dc1) p1x = mn(p1x, dc1);
+        L((v === 'inj2' ? '상해통원' : '질병통원') + ' 1일 (외래+약국 합산)', day1, p1x, fmt(day1) + ' − ' + fmt(dd1) + ' 공제' + (dc1 ? ', 1일 최고 ' + fmt(dc1) : ''));
+        pay = p1x;
+        if (!pDed) warns.push('증권의 통원 공제금액을 입력하지 않아 0505판 약관의 5,000원으로 계산했습니다(0807판은 증권의 공제금액).');
+        warns.push('통원은 동일 질병·사고 365일 안에 통산 30일까지만 보상합니다. 이 계산은 1일분이며 일수 조건은 반영하지 않았습니다.');
       }
-      if (isIn && cov > 0 && inp.cap200) {
-        var s3 = cov * rc + gen_ * rn + 0;
-        var allowed3 = mx(0, 2000000 - used.self);
-        if (s3 > allowed3) { var add3 = s3 - allowed3; total3 += add3; lines.push({ label: '연간 자기부담 200만원 상한', bill: 0, pay: add3, how: '선택하신 약관 조항 기준' }); }
+      warns.push('다수의 실손·의료비 계약이 있으면 각 계약의 보상책임액 비율로 나누어 지급합니다(비례분담). 이 계산에는 반영되지 않았습니다.');
+    }
+
+    else if (gen === 'g1' || gen === 'g2' || gen === 'g2b' || gen === 'g3') {
+      var P = { annual: 0, visitCap: 0, std: true, fixedOnly: false, split: false, rate: 0.2, rc: 0.2, rn: 0.2, rider: false, ph8: 8000, noMin: false, cap200: !!inp.cap200 };
+      if (gen === 'g1') {
+        P.rate = v === 'life' ? 0.2 : 0; P.annual = v === 'life' ? 30000000 : 0; P.noMin = true; P.cap200 = false; P.rc = P.rn = P.rate;
+        warns.push('1세대는 통원 공제금액이 약관마다 달라 5,000원(민간 정리)으로 가정했습니다. 증권 약관의 공제금액으로 다시 확인하세요.');
+      } else if (gen === 'g2') {
+        P.rate = 0.1; P.rc = P.rn = 0.1; P.visitCap = 300000; P.annual = 50000000;
+        warns.push('2009.10~2012.12 약관 원문은 확인하지 못했습니다. 통원 공제·한도는 2013년 약관 기준으로 가정했습니다.');
+      } else {
+        P.visitCap = 300000; P.annual = 50000000; P.rider = (gen === 'g3');
+        if (v === 'std') { P.rate = 0.2; P.rc = P.rn = 0.2; }
+        else if (v === 'sel1') { P.rate = 0.1; P.rc = P.rn = 0.1; P.fixedOnly = true; }
+        else { P.split = true; P.rc = 0.1; P.rn = 0.2; }
       }
-      pay = total3; selfAmt = bill - pay;
+      var cov = amt.cov, ph = amt.pharm;
+      var nonB = amt.gen + (P.rider ? 0 : nonRider);      /* 3세대는 3종 비급여를 특약에서 따로 계산 */
+      var base = cov + nonB;
+      var selfPart = P.split ? cov * P.rc + nonB * P.rn : base * P.rate;
+      if (isIn) {
+        var p = base - selfPart;
+        L('입원 의료비' + (P.split ? '(급여 90% + 비급여 80%)' : '(급여+비급여 합산)'), base, p, P.split ? fmt(cov) + ' × 90% + ' + fmt(nonB) + ' × 80%' : fmt(base) + ' × (1 − ' + pc(P.rate) + ')');
+        if (P.cap200 && selfPart > 0) {
+          var al = mx(0, 2000000 - used.self), eff = mn(selfPart, al);
+          if (selfPart > eff) { p += selfPart - eff; lines.push({ label: '자기부담 연 200만원 초과분 보상', bill: 0, pay: selfPart - eff, how: '약관: 계약해당일부터 연간 200만원 초과 시 초과금액 보상' }); }
+        }
+        p += roomPay();
+        if (P.annual) { var rem = mx(0, P.annual - used.cov - used.non); if (p > rem) { warns.push('보험가입금액 한도(' + fmt(P.annual) + ') 남은 금액 ' + fmt(rem) + '까지만 지급되도록 줄였습니다.'); lines.push({ label: '보험가입금액 한도 적용', bill: 0, pay: rem - p, how: '하나의 상해/질병당 입원 한도' }); p = rem; } }
+        pay = p;
+      } else {
+        var ob = cov + nonB, md = P.noMin ? 5000 : minDed(gen, hosp), ded;
+        if (P.noMin) ded = mx(md, ob * P.rate);
+        else if (P.fixedOnly) ded = md;
+        else if (P.split) ded = mx(md, cov * P.rc + nonB * P.rn);
+        else ded = mx(md, ob * P.rate);
+        var p1 = ob > 0 ? mx(0, ob - ded) : 0;
+        if (ob > 0) L('외래(' + HOSP[hosp] + ')', ob, p1, fmt(ob) + ' − 공제 ' + fmt(ded) + (P.fixedOnly ? '(정액)' : P.split ? '(' + fmt(md) + ' 또는 급여10%+비급여20% 중 큰 금액)' : '(' + fmt(md) + ' 또는 ' + pc(P.rate) + ' 중 큰 금액)'));
+        var p2 = 0;
+        if (ph > 0) { var pd = P.noMin ? mx(5000, ph * P.rate) : P.fixedOnly ? P.ph8 : mx(P.ph8, ph * (P.split ? P.rc : P.rate)); p2 = mx(0, ph - pd); L('처방조제(약국)', ph, p2, fmt(ph) + ' − 공제 ' + fmt(pd)); }
+        pay = p1 + p2;
+        if (P.visitCap && pay > P.visitCap) { lines.push({ label: '회당 한도 적용', bill: 0, pay: P.visitCap - pay, how: '외래+처방 합산 ' + fmt(P.visitCap) + ' 이내(계약자 선택금액)' }); pay = P.visitCap; }
+        warns.push('통원 한도(회당 30만원 이내)는 가입 시 선택한 금액입니다. 증권의 선택금액이 더 낮으면 그 금액으로 다시 확인하세요.');
+      }
+      if (P.rider) {
+        var rtot = 0;
+        RIDERS.forEach(function (r) {
+          var a = amt[r[1]]; if (a <= 0) return;
+          if (!has[r[1]]) { L('특약 · ' + r[0], a, 0, '특약 미가입 → 기본형에서 보상하지 않음'); return; }
+          var d = mx(20000, a * 0.3), pr = mn(mx(0, a - d), mx(0, r[2] - used[r[1]]));
+          L('특약 · ' + r[0], a, pr, fmt(a) + ' − 공제 ' + fmt(d) + '(2만원 또는 30% 중 큰 금액), 연 한도 ' + fmt(r[2]) + ' 이내'); rtot += pr;
+        });
+        pay += rtot;
+        if (amt.inj > 0) warns.push('비급여 주사료 중 항암제·항생제·희귀의약품은 특약이 아니라 기본형에서 보상합니다. 그 금액은 "비급여 일반"에 넣어 주세요.');
+        if (amt.manual > 0 || amt.inj > 0) warns.push('특약의 연 50회 한도와 도수치료 횟수 조건은 이 계산에 반영되지 않았습니다.');
+      } else if (nonRider > 0 && gen !== 'g3') {
+        warns.push('이 세대는 도수·주사·MRI를 일반 비급여와 합산해 계산했습니다.');
+      }
     }
 
     /* ---------- 4세대 ---------- */
     else if (gen === 'g4') {
-      var riderTot = man + inj + mri, nonTot = gen_ + riderTot;
-      var riders4 = [['도수·체외충격파·증식치료', man, 'manual', 3500000], ['비급여 주사료', inj, 'inj', 2500000], ['비급여 MRI/MRA', mri, 'mri', 3000000]];
-      var pcov = 0, pnon = 0;
+      var cov4 = amt.cov, ph4 = amt.pharm, nonTot = amt.gen + nonRider, pcov = 0, pnon = 0;
       if (isIn) {
-        pcov = cov * 0.8; if (cov > 0) L('급여 (입원)', cov, pcov, fmt(cov) + ' × (1 − 20%)');
-        var pg = gen_ * 0.7; if (gen_ > 0) L('비급여(일반)', gen_, pg, fmt(gen_) + ' × (1 − 30%)'); pnon += pg;
-        riders4.forEach(function (r) { if (r[1] > 0) { var pr = mn(r[1] * 0.7, mx(0, r[3] - used[r[2]])); L('특약 · ' + r[0], r[1], pr, fmt(r[1]) + ' × (1 − 30%), 연 한도 ' + fmt(r[3]) + ' 이내'); pnon += pr; } });
-        if (cov > 0 && inp.cap200) { var s4 = cov * 0.2, al4 = mx(0, 2000000 - used.self); if (s4 > al4) { var add4 = s4 - al4; pcov += add4; lines.push({ label: '급여 입원 자기부담 연 200만원 상한', bill: 0, pay: add4, how: '선택하신 약관 조항 기준(급여 입원 자기부담만)' }); } }
+        pcov = cov4 * 0.8; if (cov4 > 0) L('급여 (입원)', cov4, pcov, fmt(cov4) + ' × (1 − 20%)');
+        if (amt.gen > 0) { var pg = amt.gen * 0.7; L('비급여(일반)', amt.gen, pg, fmt(amt.gen) + ' × (1 − 30%)'); pnon += pg; }
+        RIDERS.forEach(function (r) { var a = amt[r[1]]; if (a > 0) { var d = mx(30000, a * 0.3), pr = mn(mx(0, a - d), mx(0, r[2] - used[r[1]])); L('특약 · ' + r[0], a, pr, fmt(a) + ' − 공제 ' + fmt(d) + '(3만원 또는 30% 중 큰 금액), 연 한도 ' + fmt(r[2]) + ' 이내'); pnon += pr; } });
+        if (cov4 > 0 && inp.cap200) { var s4 = cov4 * 0.2, al4 = mx(0, 2000000 - used.self); if (s4 > al4) { pcov += s4 - al4; lines.push({ label: '급여 입원 자기부담 연 200만원 상한', bill: 0, pay: s4 - al4, how: '선택하신 약관 조항 기준' }); } }
       } else {
-        var cb = cov + ph;
-        if (cb > 0) { var md4 = minDed('g4', hosp), d4 = mx(md4, cb * 0.2); pcov = mx(0, cb - d4); pcov = mn(pcov, 200000); L('급여 외래·처방(' + HOSP[hosp] + ')', cb, pcov, fmt(cb) + ' − 공제 ' + fmt(d4) + '(' + fmt(md4) + ' 또는 20% 중 큰 금액)' + (pcov === 200000 && cb - d4 > 200000 ? ', 회당 한도 20만원' : '')); }
+        var cb = cov4 + ph4;
+        if (cb > 0) { var md4 = minDed('g4', hosp), d4 = mx(md4, cb * 0.2); pcov = mn(mx(0, cb - d4), 200000); L('급여 외래·처방(' + HOSP[hosp] + ')', cb, pcov, fmt(cb) + ' − 공제 ' + fmt(d4) + '(' + fmt(md4) + ' 또는 20% 중 큰 금액)' + (cb - d4 > 200000 ? ', 회당 한도 20만원' : '')); }
         if (nonTot > 0) {
-          var dn = mx(30000, nonTot * 0.3), pn4 = mx(0, nonTot - dn);
-          var rp = 0; riders4.forEach(function (r) { if (r[1] > 0) { var share = pn4 * (r[1] / nonTot); rp += mn(share, mx(0, r[3] - used[r[2]])); } });
-          var gp = pn4 * (gen_ / nonTot); pn4 = gp + rp; pn4 = mn(pn4, 200000);
-          L('비급여(특약 포함)', nonTot, pn4, fmt(nonTot) + ' − 공제 ' + fmt(dn) + '(3만원 또는 30% 중 큰 금액), 회당 20만원·특약 연 한도 이내'); pnon = pn4;
+          var dn = mx(30000, nonTot * 0.3), pn4 = mx(0, nonTot - dn), rp = 0;
+          RIDERS.forEach(function (r) { var a = amt[r[1]]; if (a > 0) rp += mn(pn4 * (a / nonTot), mx(0, r[2] - used[r[1]])); });
+          pnon = mn(pn4 * (amt.gen / nonTot) + rp, 200000);
+          L('비급여(특약 포함)', nonTot, pnon, fmt(nonTot) + ' − 공제 ' + fmt(dn) + '(3만원 또는 30% 중 큰 금액), 회당 20만원·특약 연 한도 이내');
         }
       }
       var remC = mx(0, 50000000 - used.cov), remN = mx(0, 50000000 - used.non);
-      if (pcov > remC) { warns.push('급여 연간 한도(5,000만원) 남은 금액 ' + fmt(remC) + '로 제한했습니다.'); pcov = remC; }
-      if (pnon > remN) { warns.push('비급여 연간 한도(5,000만원) 남은 금액 ' + fmt(remN) + '로 제한했습니다.'); pnon = remN; }
-      pay = pcov + pnon; selfAmt = bill - pay;
-      if (inj > 0 || man > 0) warns.push('도수치료는 10회마다 증상 개선 확인, 연 50회 한도 등 횟수 조건이 있습니다. 횟수 조건은 이 계산에 반영되지 않았습니다.');
+      if (pcov > remC) { warns.push('급여 연 한도(5,000만원) 남은 금액 ' + fmt(remC) + '로 제한했습니다.'); pcov = remC; }
+      if (pnon > remN) { warns.push('비급여 연 한도(5,000만원) 남은 금액 ' + fmt(remN) + '로 제한했습니다.'); pnon = remN; }
+      pay = pcov + pnon;
+      if (amt.manual > 0) warns.push('도수치료는 10회마다 증상 개선 확인·연 50회 한도 등 횟수 조건이 있으며 이 계산에는 반영되지 않았습니다.');
+      if (room > 0) warns.push('4세대 상급병실료 차액 규정은 약관 원문을 확인하지 못해 계산에 넣지 않았습니다.');
     }
 
     /* ---------- 5세대 ---------- */
     else if (gen === 'g5') {
-      var pcov5 = 0, ps = 0, pm = 0, extra = [];
+      var pcov5 = 0, ps = 0, pm = 0;
       var nhi = mx(0, mn(1, (Number(inp.nhiRate) || 0) / 100));
       if (isIn) {
-        pcov5 = cov * 0.8; if (cov > 0) L('급여 (입원)', cov, pcov5, fmt(cov) + ' × (1 − 20%)');
-        var nonAll5 = gen_ + man + inj + mri;
+        pcov5 = amt.cov * 0.8; if (amt.cov > 0) L('급여 (입원, 일부+전액본인부담금)', amt.cov, pcov5, fmt(amt.cov) + ' × (1 − 20%)');
         if (sev) {
-          var r5 = [['비급여(일반, 중증)', gen_, null, 0], ['도수·체외충격파·증식치료', man, 'manual', 3500000], ['비급여 주사료', inj, 'inj', 2500000], ['비급여 MRI/MRA', mri, 'mri', 3000000]];
+          var r5 = [['비급여(일반, 중증)', amt.gen, null, 0]].concat(RIDERS.map(function (r) { return [r[0], amt[r[1]], r[1], r[2]]; }));
           r5.forEach(function (r) { if (r[1] > 0) { var pr = r[1] * 0.7; if (r[2]) pr = mn(pr, mx(0, r[3] - used[r[2]])); L('특약1(중증) · ' + r[0], r[1], pr, fmt(r[1]) + ' × (1 − 30%)' + (r[2] ? ', 연 한도 ' + fmt(r[3]) + ' 이내' : '')); ps += pr; } });
-          if ((hosp === 'general' || hosp === 'tertiary') && nonAll5 > 0) { var s5 = nonAll5 * 0.3, al5 = mx(0, 5000000 - used.self); if (s5 > al5) { ps += (s5 - al5); lines.push({ label: '특약1 자기부담 상한 연 500만원', bill: 0, pay: s5 - al5, how: '상급·종합병원 입원(금융위)' }); } }
+          if (hosp === 'general' || hosp === 'tertiary') {
+            var s5 = (amt.gen + amt.mri) * 0.3, al5 = mx(0, 5000000 - used.self);
+            if (s5 > al5) { ps += s5 - al5; lines.push({ label: '특약1 자기부담 상한 연 500만원', bill: 0, pay: s5 - al5, how: '약관: 상급종합·종합병원 입원, 근골격계 이학요법·체외충격파·주사료 제외' }); }
+          }
         } else {
-          if (gen_ > 0) { pm = gen_ * 0.5; L('특약2(비중증) · 비급여(일반)', gen_, pm, fmt(gen_) + ' × (1 − 50%)'); }
-          if (mri > 0) { var pmr = mn(mri * 0.5, mx(0, 2000000 - used.mri)); L('특약2(비중증) · MRI/MRA', mri, pmr, fmt(mri) + ' × (1 − 50%), 연 200만원 이내'); pm += pmr; }
-          if (man + inj > 0) { L('도수·체외충격파·비급여 주사 (비중증)', man + inj, 0, '5세대 비중증에서는 보장 제외'); warns.push('도수·체외충격파·비급여 주사료는 5세대 비중증(특약2)에서 보장하지 않습니다. 해당 질환이 산정특례 대상 중증이라면 "중증"으로 선택하세요.'); }
+          if (amt.gen > 0) { pm = amt.gen * 0.5; L('특약2(비중증) · 비급여(일반)', amt.gen, pm, fmt(amt.gen) + ' × (1 − 50%)'); }
+          if (amt.mri > 0) { var pmr = mn(amt.mri * 0.5, mx(0, 2000000 - used.mri)); L('특약2(비중증) · MRI/MRA', amt.mri, pmr, fmt(amt.mri) + ' × (1 − 50%), 연 200만원 이내'); pm += pmr; }
+          if (amt.manual + amt.inj > 0) { L('도수·체외충격파·비급여 주사 (비중증)', amt.manual + amt.inj, 0, '5세대 비중증에서는 보장 제외'); warns.push('도수·체외충격파·비급여 주사료는 5세대 비중증(특약2)에서 보장하지 않습니다. 산정특례 대상 중증이라면 "중증"으로 선택하세요.'); }
           if ((hosp === 'clinic' || hosp === 'hospital') && pm > 3000000) { lines.push({ label: '입원 회당 한도', bill: 0, pay: 3000000 - pm, how: '비중증 병·의원 입원 회당 300만원' }); pm = 3000000; }
         }
       } else {
-        var cb5 = cov + ph;
+        var cb5 = amt.cov + amt.pharm;
         if (cb5 > 0) { var md5 = minDed('g5', hosp), d5 = mx(md5, cb5 * 0.2, cb5 * nhi); pcov5 = mn(mx(0, cb5 - d5), 200000); L('급여 외래·처방(' + HOSP[hosp] + ')', cb5, pcov5, fmt(cb5) + ' − 공제 ' + fmt(d5) + '(' + fmt(md5) + ' · 20%' + (nhi ? ' · 건보율 ' + pc(nhi) : '') + ' 중 큰 금액), 회당 한도 20만원'); }
-        var nb5 = gen_ + man + inj + mri;
+        var nb5 = amt.gen + nonRider;
         if (nb5 > 0) {
           if (sev) {
-            var dd5 = mx(30000, nb5 * 0.3), pp5 = mx(0, nb5 - dd5);
-            var rp5 = 0; [['manual', man, 3500000], ['inj', inj, 2500000], ['mri', mri, 3000000]].forEach(function (r) { if (r[1] > 0) rp5 += mn(pp5 * (r[1] / nb5), mx(0, r[2] - used[r[0]])); });
-            ps = mn(pp5 * (gen_ / nb5) + rp5, 200000); L('특약1(중증) 비급여', nb5, ps, fmt(nb5) + ' − 공제 ' + fmt(dd5) + '(3만원 또는 30% 중 큰 금액), 회당 20만원');
+            var dd5 = mx(30000, nb5 * 0.3), pp5 = mx(0, nb5 - dd5), rp5 = 0;
+            RIDERS.forEach(function (r) { var a = amt[r[1]]; if (a > 0) rp5 += mn(pp5 * (a / nb5), mx(0, r[2] - used[r[1]])); });
+            ps = mn(pp5 * (amt.gen / nb5) + rp5, 200000); L('특약1(중증) 비급여', nb5, ps, fmt(nb5) + ' − 공제 ' + fmt(dd5) + '(3만원 또는 30% 중 큰 금액), 회당 20만원');
           } else {
-            var okAmt = gen_ + mri; if (man + inj > 0) { L('도수·체외충격파·비급여 주사 (비중증)', man + inj, 0, '5세대 비중증에서는 보장 제외'); warns.push('도수·체외충격파·비급여 주사료는 5세대 비중증(특약2)에서 보장하지 않습니다.'); }
-            if (okAmt > 0) { var dd6 = mx(50000, okAmt * 0.5), pp6 = mx(0, okAmt - dd6); pp6 = mn(pp6, 200000); if (mri > 0) { var shareM = mri / okAmt; pp6 = (pp6 * (1 - shareM)) + mn(pp6 * shareM, mx(0, 2000000 - used.mri)); } pm = pp6; L('특약2(비중증) 비급여', okAmt, pm, fmt(okAmt) + ' − 공제 ' + fmt(dd6) + '(5만원 또는 50% 중 큰 금액), 1일 20만원'); }
+            var okAmt = amt.gen + amt.mri;
+            if (amt.manual + amt.inj > 0) { L('도수·체외충격파·비급여 주사 (비중증)', amt.manual + amt.inj, 0, '5세대 비중증에서는 보장 제외'); warns.push('도수·체외충격파·비급여 주사료는 5세대 비중증(특약2)에서 보장하지 않습니다.'); }
+            if (okAmt > 0) { var dd6 = mx(50000, okAmt * 0.5), pp6 = mn(mx(0, okAmt - dd6), 200000); if (amt.mri > 0) { var sh = amt.mri / okAmt; pp6 = pp6 * (1 - sh) + mn(pp6 * sh, mx(0, 2000000 - used.mri)); } pm = pp6; L('특약2(비중증) 비급여', okAmt, pm, fmt(okAmt) + ' − 공제 ' + fmt(dd6) + '(5만원 또는 50% 중 큰 금액), 1일 20만원'); }
           }
         }
       }
@@ -1633,11 +1687,43 @@ var SILSON = (function () {
       if (pcov5 > rc5) { warns.push('기본형(급여) 연 한도 5,000만원 남은 금액 ' + fmt(rc5) + '로 제한했습니다.'); pcov5 = rc5; }
       if (ps > rs5) { warns.push('특약1 연 한도 5,000만원 남은 금액으로 제한했습니다.'); ps = rs5; }
       if (pm > rn5) { warns.push('특약2 연 한도 1,000만원 남은 금액으로 제한했습니다.'); pm = rn5; }
-      pay = pcov5 + ps + pm; selfAmt = bill - pay;
-      warns.push('5세대의 급여 외래 공제 중 "건강보험 본인부담률"은 해당 시에만 입력하는 선택값입니다. 모르면 비워 두고 약관을 확인하세요.');
+      pay = pcov5 + ps + pm;
+      if (room > 0) warns.push('상급병실료 차액은 일반 비급여로 입력해 주세요(5세대 약관은 1일 평균 10만원 한도 등 별도 규정이 있으며 이 계산에는 넣지 않았습니다).');
     }
 
-    pay = mx(0, Math.floor(pay)); selfAmt = mx(0, bill - pay);
+    /* ---------- 노후실손 ---------- */
+    else if (gen === 'noo') {
+      var nonN = amt.gen + nonRider, covN = amt.cov + amt.pharm, dedN = isIn ? 300000 : 30000;
+      var dn1 = mn(nonN, dedN), dcN = dedN - dn1;      /* 비급여에서 우선 공제 */
+      var pn = mx(0, nonN - dn1) * 0.7, pcN = mx(0, covN - dcN) * 0.8;
+      if (nonN > 0) L('비급여', nonN, pn, '(' + fmt(nonN) + ' − 우선공제 ' + fmt(dn1) + ') × 70%');
+      if (covN > 0) L('급여', covN, pcN, '(' + fmt(covN) + ' − 잔여공제 ' + fmt(dcN) + ') × 80%');
+      pay = pn + pcN;
+      if (isIn) {
+        var selfN = nonN + covN - pay, alN = mx(0, 5000000 - used.self);
+        if (selfN > alN) { pay += selfN - alN; lines.push({ label: '입원 자기부담 연 500만원 초과분 보상', bill: 0, pay: selfN - alN, how: '약관: 본인이 부담하는 금액이 연 500만원 초과 시 초과금액 보상' }); }
+      } else if (pay > 1000000) { lines.push({ label: '통원 회당 한도', bill: 0, pay: 1000000 - pay, how: '회(건)당 최고 100만원' }); pay = 1000000; }
+      var remN2 = mx(0, 100000000 - used.cov - used.non); if (pay > remN2) { warns.push('연 한도(1억원) 남은 금액으로 제한했습니다.'); pay = remN2; }
+      warns.push('노후실손은 요양병원 입원·통원은 보상하지 않습니다. 상급병실료 차액은 제외하고 입력하세요. 공제는 입원 1건당 30만원, 통원 1회당 3만원입니다.');
+    }
+
+    /* ---------- 유병력자 실손 ---------- */
+    else if (gen === 'yub') {
+      var baseY = amt.cov + amt.pharm + amt.gen;
+      if (nonRider > 0) { L('도수·체외충격파·증식·주사·MRI 비급여', nonRider, 0, '유병력자 실손은 보상하지 않음'); warns.push('유병력자 실손은 도수치료·체외충격파·증식치료, 비급여 주사료(항암제·항생제·희귀의약품 제외), MRI/MRA 비급여를 보상하지 않습니다.'); }
+      var dY = mx(isIn ? 100000 : 20000, baseY * 0.3), pY = mx(0, baseY - dY);
+      if (baseY > 0) L((isIn ? '입원' : '통원') + ' 의료비', baseY, pY, fmt(baseY) + ' − 공제 ' + fmt(dY) + '(' + (isIn ? '10만원' : '2만원') + ' 또는 30% 중 큰 금액)');
+      pay = pY;
+      if (isIn && baseY > 0 && inp.cap200 !== false) {
+        var alY = mx(0, 2000000 - used.self);
+        if (dY > alY) { pay += dY - alY; lines.push({ label: '공제금액 연 200만원 초과분 보상', bill: 0, pay: dY - alY, how: '약관: 공제금액이 연간 200만원을 초과하면 초과금액 보상' }); }
+      }
+      var remY = mx(0, 50000000 - used.cov - used.non); if (isIn && pay > remY) { warns.push('입원 한도(5,000만원) 남은 금액으로 제한했습니다.'); pay = remY; }
+      if (!isIn) warns.push('통원 회당 한도는 가입 시 선택한 금액(연 180회 이내)입니다. 증권으로 확인하세요.');
+    }
+
+    pay = mx(0, Math.floor(pay));
+    var selfAmt = mx(0, bill - pay);
     var g = GENS[gen];
     return { ok: true, gen: gen, genName: g.name, conf: g.conf, hospName: HOSP[hosp], typeName: isIn ? '입원' : '통원', bill: bill, pay: pay, self: selfAmt, lines: lines, warns: warns, src: g.src.map(function (k) { return SRC[k]; }) };
   }
@@ -1668,24 +1754,30 @@ function renderSilson() {
 function slOnGen() {
   var k = slEl('slGen').value, g = SILSON.GENS[k];
   slEl('slVar').innerHTML = g.variants.map(function (v) { return '<option value="' + v.id + '">' + escapeHtml(v.name) + '</option>'; }).join('');
-  slEl('slVarWrap').style.display = (k === 'g1' || k === 'g2b') ? '' : 'none';
-  slEl('slG3').style.display = k === 'g3' ? '' : 'none';
+  slEl('slVarWrap').style.display = (k === 'g1' || k === 'g2b' || k === 'g3') ? '' : 'none';
+  slEl('slRider').style.display = k === 'g3' ? '' : 'none';
+  slEl('slPol').style.display = k === 'g1' ? '' : 'none';
+  slEl('slRoomWrap').style.display = (k === 'g1' || k === 'g2' || k === 'g2b' || k === 'g3') && slEl('slType').value === 'in' ? '' : 'none';
   slEl('slSev').style.display = k === 'g5' ? '' : 'none';
   slEl('slNhiWrap').style.display = k === 'g5' ? '' : 'none';
-  var tag = { official: ['공식자료 확인', 'ok'], partial: ['일부만 공식 확인 · 약관 대조 필요', 'mid'], ref: ['참고용 · 약관 대조 필수', 'low'] }[g.conf];
+  var tag = { doc: ['메리츠 약관 원문으로 확인', 'ok'], official: ['공식자료 확인(약관 원문 미확인)', 'ok'], partial: ['일부만 확인 · 약관 대조 필요', 'mid'], ref: ['참고용 · 약관 대조 필수', 'low'] }[g.conf];
   slEl('slGenNote').innerHTML = '<span class="sl-badge ' + tag[1] + '">' + tag[0] + '</span> ' + escapeHtml(g.note);
-  slEl('slCapWrap').style.display = (k === 'g1' || k === 'g5') ? 'none' : '';
+  slEl('slCapWrap').style.display = (k === 'g2' || k === 'g2b' || k === 'g3' || k === 'g4') ? '' : 'none';
+  slEl('slCap').checked = (k === 'g2b' || k === 'g3');
 }
 function slOnType() {
   var isIn = slEl('slType').value === 'in';
   slEl('slPharmWrap').style.display = isIn ? 'none' : '';
+  var k = slEl('slGen').value;
+  slEl('slRoomWrap').style.display = (k === 'g1' || k === 'g2' || k === 'g2b' || k === 'g3') && isIn ? '' : 'none';
 }
 function slRun() {
   var inp = {
     gen: slEl('slGen').value, variant: slEl('slVar').value, type: slEl('slType').value, hosp: slEl('slHosp').value,
     cov: slNum('slCov'), pharm: slNum('slPharm'), nonGen: slNum('slNonGen'), nonManual: slNum('slNonMan'), nonInj: slNum('slNonInj'), nonMri: slNum('slNonMri'),
     severe: slEl('slSevChk').checked, nhiRate: parseFloat(slEl('slNhi').value) || 0,
-    g3Cov: parseFloat(slEl('slG3Cov').value), g3Non: parseFloat(slEl('slG3Non').value),
+    riders: { manual: slEl('slRMan').checked, inj: slEl('slRInj').checked, mri: slEl('slRMri').checked },
+    room: slNum('slRoom'), days: slNum('slDays'), polCap: slNum('slPolCap'), polDed: slNum('slPolDed'), polDay: slNum('slPolDay'),
     cap200: slEl('slCap').checked,
     used: { cov: slNum('slUCov'), non: slNum('slUNon'), manual: slNum('slUMan'), inj: slNum('slUInj'), mri: slNum('slUMri'), self: slNum('slUSelf') }
   };
@@ -1697,23 +1789,25 @@ function slRun() {
     '<div class="sl-sub">' + escapeHtml(r.genName + ' · ' + r.typeName + ' · ' + r.hospName) + '</div>' +
     '<div class="sl-sum"><div><small>청구한 의료비(본인부담)</small><b>' + f(r.bill) + '</b></div><div><small>고객 최종 부담(예상)</small><b>' + f(r.self) + '</b></div></div>' +
     '<div class="sl-lines">' + r.lines.map(function (l) { return '<div class="sl-line"><div class="sl-ll"><b>' + escapeHtml(l.label) + '</b><span>' + escapeHtml(l.how || '') + '</span></div><div class="sl-lr">' + (l.pay < 0 ? '−' + f(-l.pay) : f(l.pay)) + '</div></div>'; }).join('') + '</div>';
-  if (r.conf !== 'official') h += '<div class="sl-warn">이 세대는 공식 자료만으로 모든 조건을 확인하지 못했습니다. 아래 안내와 가입자 증권의 약관을 대조해 확정하세요.</div>';
+  if (r.conf === 'partial' || r.conf === 'ref') h += '<div class="sl-warn">이 세대는 공식 자료만으로 모든 조건을 확인하지 못했습니다. 아래 안내와 가입자 증권의 약관을 대조해 확정하세요.</div>';
   if (r.warns.length) h += '<div class="sl-warn">' + r.warns.map(function (w) { return '• ' + escapeHtml(w); }).join('<br>') + '</div>';
   h += '<div class="pt-note">※ 약관 기준의 <b>예상액</b>입니다. 실제 지급액은 보험사의 심사(보험사 간 비례 분담, 면책·감액 사유, 의학적 필요성 판단 등)로 달라질 수 있으며, 고객에게 지급을 약속하는 용도로 쓰지 마세요.<br>미반영: 상급병실료 차액 등 항목별 특칙, 여러 건의 실손 계약 비례분담, 횟수 조건, 보험료 할인·할증.</div>';
-  h += '<div class="pt-note">근거: ' + r.src.map(function (s) { return '<a href="' + escapeHtml(s.u) + '" target="_blank" rel="noopener">' + escapeHtml(s.t) + '</a>'; }).join(' · ') + '</div></div>';
+  h += '<div class="pt-note">근거: ' + r.src.map(function (s) { return s.u ? '<a href="' + escapeHtml(s.u) + '" target="_blank" rel="noopener">' + escapeHtml(s.t) + '</a>' : escapeHtml(s.t); }).join(' · ') + '</div></div>';
   out.innerHTML = h;
   out.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 var SL_HISTORY = [
-  ['1세대 · 구실손', '~2009.9', '생보사 80% 보장(연 3천만원), 손보사 100% 보장(한도 회사별). 약관 차이가 큼.', 'ref'],
-  ['2세대 · 표준화(1기)', '2009.10~2013.3', '표준약관 도입. 입원 본인부담금의 90% 보장, 연 5천만원.', 'partial'],
-  ['2세대 · 표준화(2기)', '2013.4~2017.3', '표준형(80%·통원 병원규모별 공제와 20% 중 큰 금액)과 선택형(90%·정액 공제).', 'partial'],
-  ['3세대 · 신실손(착한실손)', '2017.4~2021.6', '급여/비급여 분리. 도수·주사·MRI 특약 분리(자기부담 30%), 연 한도 350만/250만/300만원.', 'partial'],
-  ['4세대', '2021.7~2026.5', '급여 20%, 비급여 30%(특약). 통원 최소 공제 급여 1~2만원·비급여 3만원. 비급여 이용량에 따른 보험료 할인·할증.', 'official'],
-  ['5세대', '2026.5.6~', '급여 20%, 중증 비급여 30%·비중증 비급여 50%. 도수·체외충격파·비급여 주사 비중증 보장 제외. 기존 가입자 전환 가능.', 'official']
+  ['1세대 · 구실손(메리츠 0505·0807판 확인)', '~2009.9', '입원: 급여 본인부담금+비급여 100%, 병실료 차액 50%, 동일 질병·사고 365일(0505판 질병당 3천만원 고정, 0807판은 증권의 가입금액). 통원: 1일 공제 후 100%(0505판 5천원·1일 10만원, 0807판은 증권의 공제금액·가입금액), 통산 30일. 상해는 의료실비(전액, 1사고당 가입금액, 180일). 0807판은 청약 전 5년 이내 진단·치료 질병 제외, 3년 갱신형. 건강보험 미적용 시 40%(상해 의료실비 50%). 다수 계약은 비례분담. 다른 회사·시기는 증권 확인 필수.', 'partial'],
+  ['2세대 · 표준화 초기', '2009.10~2012.12', '표준약관 도입. 입원 본인부담금의 90% 보장, 연 5천만원(보험연구원). 이 시기 약관 원문은 미확인.', 'partial'],
+  ['2세대 · 표준화 개정(1301~1701판)', '2013.1~2017.3', '표준형(80%·통원 병원규모별 공제와 20% 중 큰 금액)과 선택형Ⅰ(90%·정액 공제). 2015.9부터 선택형Ⅱ(급여 90%·비급여 80%). 자기부담 연 200만원 초과분 보상, 상급병실료 차액 50%(1일 평균 10만원 한도), 입원 한도 상해·질병당 5천만원(365일+90일 제외), 통원 회당 30만원 이내·연 180회.', 'doc'],
+  ['3세대 · 신실손(1801·1804판, 계약전환용 포함)', '2017.4~2021.6', '기본형(표준형 20% / 선택형Ⅱ 급여 10%·비급여 20%)에서 도수·체외충격파·증식치료, 비급여 주사료, MRI/MRA를 빼고 특약으로 분리. 특약 공제 Max(2만원, 30%), 한도 350만원·50회 / 250만원·50회 / 300만원. 계약전환제도로 구실손·표준화 실손에서 전환 가능.', 'doc'],
+  ['노후실손', '2014.8~', '50세 이상. 입원 30만원·통원 3만원 우선공제 후 급여 80%·비급여 70%, 연 한도 1억원, 통원 회당 100만원, 입원 자기부담 연 500만원 초과분 보상, 요양병원 제외.', 'doc'],
+  ['유병력자 실손', '2018.4~', '입원 Max(10만원, 30%)·통원 Max(2만원, 30%) 공제 후 보상, 입원 연 5천만원, 도수·주사·MRI 등 비급여 3종 제외.', 'doc'],
+  ['4세대', '2021.7~2026.5', '급여 20%, 비급여 30%(특약). 통원 최소 공제 급여 1~2만원·비급여 3만원. 비급여 이용량에 따른 보험료 할인·할증. (메리츠 4세대 약관 원문은 미확인)', 'official'],
+  ['5세대(재개 및 전환용 2610판)', '2026.5.6~', '급여 20%(통원은 Max[1·2만원, 20%, 건강보험 본인부담률]), 중증 비급여 30%·비중증 비급여 50%. 중증 특약1은 연 5천만원, 비중증 특약2는 연 1천만원. 도수·체외충격파·비급여 주사는 비중증 보장 제외. 상급·종합병원 입원 자기부담 연 500만원 상한(근골격계 이학요법·충격파·주사 제외).', 'doc']
 ];
 function slRenderHistory() {
-  slEl('slHist').innerHTML = SL_HISTORY.map(function (x) { var t = { official: '공식', partial: '일부', ref: '참고' }[x[3]]; return '<div class="sl-h"><div class="sl-hd"><b>' + escapeHtml(x[0]) + '</b><span>' + escapeHtml(x[1]) + '</span><i class="sl-badge ' + ({ official: 'ok', partial: 'mid', ref: 'low' }[x[3]]) + '">' + t + '</i></div><div class="sl-hb">' + escapeHtml(x[2]) + '</div></div>'; }).join('');
+  slEl('slHist').innerHTML = SL_HISTORY.map(function (x) { var t = { doc: '약관확인', official: '공식', partial: '일부', ref: '참고' }[x[3]]; return '<div class="sl-h"><div class="sl-hd"><b>' + escapeHtml(x[0]) + '</b><span>' + escapeHtml(x[1]) + '</span><i class="sl-badge ' + ({ doc: 'ok', official: 'ok', partial: 'mid', ref: 'low' }[x[3]]) + '">' + t + '</i></div><div class="sl-hb">' + escapeHtml(x[2]) + '</div></div>'; }).join('');
 }
 
 /* ============================================================
