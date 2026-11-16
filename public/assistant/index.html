@@ -756,9 +756,9 @@
   .pt-src { font-size: 11.5px; color: var(--ink-muted); line-height: 1.6; }
 
   /* ---------- 상담 복기 ---------- */
-  .tabbar { overflow-x: auto; scrollbar-width: none; }
-  .tabbar::-webkit-scrollbar { display: none; }
-  .tabbtn { flex: 1 0 auto; padding-left: 11px; padding-right: 11px; white-space: nowrap; }
+  /* 탭이 많아져도 모두 보이도록 줄바꿈 (관리자 탭이 화면 밖으로 밀리지 않게) */
+  .tabbar { flex-wrap: wrap; }
+  .tabbtn { flex: 1 1 auto; padding-left: 10px; padding-right: 10px; white-space: nowrap; }
   #crPill { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%); z-index: 60; border: none; background: #b3261e; color: #fff; font-size: 12.5px; font-weight: 700; padding: 9px 16px; border-radius: 999px; box-shadow: 0 6px 20px rgba(0,0,0,.35); cursor: pointer; font-family: inherit; animation: crPulse 1.6s ease-in-out infinite; }
   @keyframes crPulse { 50% { opacity: .78; } }
   .cr-consent { display: flex; gap: 9px; align-items: flex-start; margin: 12px 0 6px; font-size: 13px; line-height: 1.5; color: var(--ink); background: #fbf6e9; border: 1px solid #ecdcae; border-radius: 10px; padding: 10px 12px; cursor: pointer; }
