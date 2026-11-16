@@ -870,7 +870,8 @@ router.post('/pdf', upload.single('file'), async (req, res) => {
   let sourceName = String(req.body.sourceName || '').trim();
   const isTerms = req.body.docType === 'terms'; // 약관 원문: 글자만 읽어 쪽별로 그대로 보관 (요약·변형 없음)
   let company = String(req.body.company || '').trim().slice(0, 40) || null;
-  const autoMeta = isTerms && company === 'auto'; // 보험사·종류를 파일 내용에서 알아서 판별
+  const autoMeta = isTerms && (company === 'auto' || sourceName === 'auto'); // 보험사·종류를 파일 내용에서 알아서 판별 (보험사를 직접 골랐으면 그 보험사를 따름)
+  if (company === 'auto') company = null;
   const mode = req.body.mode === 'notes' && !isTerms ? 'notes' : 'data'; // 'vision'은 아래에서 따로 처리
   if (!sourceName && !autoMeta) return res.status(400).json({ error: '자료 이름을 입력해주세요.' });
   try {
@@ -878,9 +879,9 @@ router.post('/pdf', upload.single('file'), async (req, res) => {
     if (autoMeta) {
       pg0 = await extractPdfPages(req.file.buffer);
       const m = detectTermsMeta(pg0, String(req.body.title || req.file.originalname || ''));
-      if (!m.company) return res.status(422).json({ error: '보험사를 판별하지 못했습니다. 보험사를 직접 선택해서 다시 올려주세요.' });
-      company = m.company;
-      sourceName = `약관 · ${m.company} · ${m.category}`;
+      if (!company) company = m.company;
+      if (!company) return res.status(422).json({ error: '보험사를 판별하지 못했습니다. 보험사를 직접 선택해서 다시 올려주세요.' });
+      sourceName = `약관 · ${company} · ${m.category}`;
       const base = String(req.body.title || req.file.originalname || '').replace(/\.pdf$/i, '');
       if (m.productName && !base.replace(/\s/g, '').includes(m.productName.replace(/\s/g, '').slice(0, 8))) autoTitle = `${m.productName} (${base})`.slice(0, 200);
       else autoTitle = base.slice(0, 200);
