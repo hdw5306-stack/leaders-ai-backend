@@ -129,12 +129,12 @@ router.post('/branch-admins', async (req, res) => {
 });
 
 // ── 약관(terms) 관리 ─────────────────────────────────────────
-router.get('/terms', async (req, res) => {
+router.get('/terms', requireSuperAdmin, async (req, res) => {
   const result = await pool.query('SELECT * FROM terms ORDER BY id DESC');
   res.json({ items: result.rows });
 });
 
-router.post('/terms', async (req, res) => {
+router.post('/terms', requireSuperAdmin, async (req, res) => {
   const { company, product, rider, coverage, exclusions } = req.body || {};
   if (!company || !product || !rider || !coverage) {
     return res.status(400).json({ error: '회사명, 상품명, 특약명, 보장내용은 필수입니다.' });
@@ -148,7 +148,7 @@ router.post('/terms', async (req, res) => {
   res.json({ item: result.rows[0] });
 });
 
-router.put('/terms/:id', async (req, res) => {
+router.put('/terms/:id', requireSuperAdmin, async (req, res) => {
   const { company, product, rider, coverage, exclusions } = req.body || {};
   const list = Array.isArray(exclusions) ? exclusions : String(exclusions || '').split('\n').filter(Boolean);
   const result = await pool.query(
@@ -160,18 +160,18 @@ router.put('/terms/:id', async (req, res) => {
   res.json({ item: result.rows[0] });
 });
 
-router.delete('/terms/:id', async (req, res) => {
+router.delete('/terms/:id', requireSuperAdmin, async (req, res) => {
   await pool.query('DELETE FROM terms WHERE id = $1', [req.params.id]);
   res.json({ ok: true });
 });
 
 // ── 보상사례(claims) 관리 ────────────────────────────────────
-router.get('/claims', async (req, res) => {
+router.get('/claims', requireSuperAdmin, async (req, res) => {
   const result = await pool.query('SELECT * FROM claims ORDER BY id DESC');
   res.json({ items: result.rows });
 });
 
-router.post('/claims', async (req, res) => {
+router.post('/claims', requireSuperAdmin, async (req, res) => {
   const { caseTitle, summary, rangeDesc, note } = req.body || {};
   if (!caseTitle || !summary || !rangeDesc) {
     return res.status(400).json({ error: '사례 제목, 요약, 지급범위는 필수입니다.' });
@@ -184,7 +184,7 @@ router.post('/claims', async (req, res) => {
   res.json({ item: result.rows[0] });
 });
 
-router.put('/claims/:id', async (req, res) => {
+router.put('/claims/:id', requireSuperAdmin, async (req, res) => {
   const { caseTitle, summary, rangeDesc, note } = req.body || {};
   const result = await pool.query(
     `UPDATE claims SET case_title=$1, summary=$2, range_desc=$3, note=$4,
@@ -195,7 +195,7 @@ router.put('/claims/:id', async (req, res) => {
   res.json({ item: result.rows[0] });
 });
 
-router.delete('/claims/:id', async (req, res) => {
+router.delete('/claims/:id', requireSuperAdmin, async (req, res) => {
   await pool.query('DELETE FROM claims WHERE id = $1', [req.params.id]);
   res.json({ ok: true });
 });
