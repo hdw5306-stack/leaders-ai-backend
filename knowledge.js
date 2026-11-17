@@ -118,7 +118,7 @@ async function throttleEmbed(tokens) {
 }
 
 async function embedTexts(texts, onProgress) {
-  const BATCH = 100, CONCURRENCY = 3;
+  const BATCH = 100, CONCURRENCY = 4;
   const batches = [];
   for (let i = 0; i < texts.length; i += BATCH) batches.push({ start: i, items: texts.slice(i, i + BATCH).map(t => String(t).slice(0, 6000)) });
   const out = new Array(texts.length);
