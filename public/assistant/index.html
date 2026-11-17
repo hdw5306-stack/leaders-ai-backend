@@ -87,6 +87,9 @@
     letter-spacing: 0;
   }
 
+  .top-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .who-chip { border: 1px solid #d9c9a0; background: rgba(255,255,255,.75); color: var(--navy); font-family: inherit; font-size: 12.5px; font-weight: 700; padding: 4px 11px; border-radius: 14px; cursor: pointer; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .who-chip.admin { background: var(--navy); color: #fff; border-color: var(--navy); }
   .clock { font-size: 12px; color: var(--ink-muted); }
 
   .avatar-wrap {
@@ -859,7 +862,11 @@
   <div class="stage">
     <div class="stage-top">
       <div class="brand">리더스 AI 비서<small>설계 동행 프로토타입 · 음성/텍스트 지원</small></div>
-      <div class="clock" id="clock"></div>
+      <div class="top-right">
+        <button type="button" class="who-chip" id="whoChip" style="display:none;"></button>
+        <button type="button" class="who-chip admin" id="whoAdminBtn" style="display:none;">관리자 ▸</button>
+        <div class="clock" id="clock"></div>
+      </div>
     </div>
     <div class="avatar-wrap">
       <div class="avatar-orb" id="avatarOrb">
@@ -2518,6 +2525,7 @@ document.getElementById('logoutBtn').addEventListener('click', () => {
   TERMS_DB = DEMO_TERMS_DB;
   CLAIMS_DB = DEMO_CLAIMS_DB;
   document.getElementById('adminTabBtn').style.display = 'none';
+  updateWhoChip();
   showLoginScreen();
 });
 
@@ -2530,11 +2538,31 @@ function isAdminRole(role) {
   return role === 'super_admin' || role === 'branch_admin';
 }
 
+/* 화면 위쪽에 로그인한 사람 이름과 관리자 바로가기를 보여줍니다 */
+function updateWhoChip() {
+  const chip = document.getElementById('whoChip');
+  const adm = document.getElementById('whoAdminBtn');
+  if (!chip || !adm) return;
+  if (GUEST_MODE || !AUTH_USER_NAME) {
+    chip.style.display = ''; chip.textContent = '둘러보기 중'; adm.style.display = 'none'; return;
+  }
+  const short = AUTH_ROLE === 'super_admin' ? '상무' : AUTH_ROLE === 'branch_admin' ? '지사장' : '설계사';
+  chip.style.display = ''; chip.textContent = `${AUTH_USER_NAME} ${short}님`;
+  adm.style.display = isAdminRole(AUTH_ROLE) ? '' : 'none';
+}
+document.getElementById('whoChip').addEventListener('click', () => {
+  const b = document.querySelector('.tabbtn[data-tab="settings"]'); if (b) b.click();
+});
+document.getElementById('whoAdminBtn').addEventListener('click', () => {
+  const b = document.getElementById('adminTabBtn'); if (b) b.click();
+});
+
 function afterAuthReady() {
   document.getElementById('accountInfo').textContent = GUEST_MODE
     ? '둘러보기 모드입니다. 일정은 이 브라우저에만 임시로 저장됩니다.'
     : `${AUTH_USER_NAME}님으로 로그인되어 있습니다. (${roleLabel(AUTH_ROLE)}) 일정이 서버에 안전하게 저장됩니다.`;
   document.getElementById('adminTabBtn').style.display = (!GUEST_MODE && isAdminRole(AUTH_ROLE)) ? '' : 'none';
+  updateWhoChip();
   const accBlock = document.getElementById('accountChangeBlock');
   if (accBlock) accBlock.style.display = GUEST_MODE ? 'none' : '';
   loadScheduleFromServer();
