@@ -451,6 +451,16 @@
   .settings-block { margin-bottom: 22px; }
   .settings-block .section-label { margin-bottom: 10px; }
 
+  /* 관리자 화면: 항목을 접어 두고 막대를 눌러 펼치는 방식 (길게 늘어지지 않게) */
+  #panel-admin .settings-block { margin-bottom: 10px; background: var(--paper-card); border: 1px solid #e6e1d4; border-radius: 12px; overflow: hidden; }
+  #panel-admin .settings-block > .section-label { margin: 0; padding: 14px 16px; font-size: 14px; font-weight: 700; color: var(--navy); cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; }
+  #panel-admin .settings-block > .section-label::after { content: '▾'; font-size: 13px; color: var(--ink-muted); transition: transform .2s; }
+  #panel-admin .settings-block.open > .section-label { border-bottom: 1px solid #efe9d8; }
+  #panel-admin .settings-block.open > .section-label::after { transform: rotate(180deg); }
+  #panel-admin .settings-block > .acc-body { display: none; padding: 12px 16px 16px; }
+  #panel-admin .settings-block.open > .acc-body { display: block; }
+  #panel-admin #branchList, #panel-admin #adminUserList { max-height: 340px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
   .name-field {
     width: 100%;
     border: 1px solid #d9d2bd;
@@ -1245,7 +1255,7 @@ https://www.idbins.com</textarea>
         <div class="admin-empty" id="prodEmpty" style="display:none;">등록된 상품자료가 없습니다.</div>
       </div>
 
-      <div class="settings-block">
+      <div class="settings-block" id="termsAdminBlock" style="display:none;">
         <div class="section-label">약관 · 특약 관리</div>
         <div class="admin-sub-title">여기서 등록·수정·삭제하면 모든 설계사의 AI 상담 화면에 바로 반영됩니다.</div>
         <div class="admin-form" id="termForm">
@@ -1261,7 +1271,7 @@ https://www.idbins.com</textarea>
         <div class="admin-empty" id="termEmpty" style="display:none;">등록된 약관이 없습니다.</div>
       </div>
 
-      <div class="settings-block">
+      <div class="settings-block" id="claimsAdminBlock" style="display:none;">
         <div class="section-label">보상사례 관리</div>
         <div class="admin-sub-title">고객 상담 중 참고할 보상사례를 등록하면 모든 설계사가 실시간으로 받아봅니다.</div>
         <div class="admin-form" id="claimForm">
@@ -2592,6 +2602,24 @@ async function loadContentFromServer() {
   }
 }
 
+/* 관리자 화면 접기/펼치기: 막대를 누르면 그 항목만 열립니다 */
+(function setupAdminAccordion() {
+  document.querySelectorAll('#panel-admin .settings-block').forEach(block => {
+    const label = block.querySelector(':scope > .section-label');
+    if (!label || block.querySelector(':scope > .acc-body')) return;
+    const body = document.createElement('div');
+    body.className = 'acc-body';
+    while (label.nextSibling) body.appendChild(label.nextSibling);
+    block.appendChild(body);
+    label.setAttribute('role', 'button');
+    label.addEventListener('click', () => {
+      const willOpen = !block.classList.contains('open');
+      document.querySelectorAll('#panel-admin .settings-block.open').forEach(b => b.classList.remove('open'));
+      if (willOpen) block.classList.add('open');
+    });
+  });
+})();
+
 /* ============================================================
    관리자 패널 — 가입 승인 / 약관 관리 / 보상사례 관리
 ============================================================ */
@@ -2601,12 +2629,14 @@ async function renderAdminPanel() {
   document.getElementById('branchManageBlock').style.display = isSuper ? 'block' : 'none';
   document.getElementById('branchAdminCreateBlock').style.display = isSuper ? 'block' : 'none';
   document.getElementById('productDocBlock').style.display = isSuper ? 'block' : 'none';
+  document.getElementById('termsAdminBlock').style.display = isSuper ? 'block' : 'none';
+  document.getElementById('claimsAdminBlock').style.display = isSuper ? 'block' : 'none';
   document.getElementById('knowledgeBlock').style.display = isSuper ? 'block' : 'none';
   document.getElementById('adminScopeNote').textContent = isSuper
     ? '전체 지사의 설계사가 보입니다. 승인/거절/승인취소 처리해주세요.'
     : '우리 지사 소속 설계사만 보입니다. 승인/거절/승인취소 처리해주세요.';
-  const tasks = [renderAdminUsers(), renderAdminTerms(), renderAdminClaims()];
-  if (isSuper) tasks.push(renderAdminBranches(), populateBaBranchSelect(), renderAdminProducts(), renderKnowledge());
+  const tasks = [renderAdminUsers()]; // 지사장은 가입 승인 관리만 사용
+  if (isSuper) tasks.push(renderAdminTerms(), renderAdminClaims(), renderAdminBranches(), populateBaBranchSelect(), renderAdminProducts(), renderKnowledge());
   await Promise.all(tasks);
 }
 
