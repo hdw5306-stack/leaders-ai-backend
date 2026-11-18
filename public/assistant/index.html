@@ -2665,14 +2665,14 @@ async function renderAdminPanel() {
   document.getElementById('branchManageBlock').style.display = isSuper ? 'block' : 'none';
   document.getElementById('branchAdminCreateBlock').style.display = isSuper ? 'block' : 'none';
   document.getElementById('productDocBlock').style.display = isSuper ? 'block' : 'none';
-  document.getElementById('termsAdminBlock').style.display = isSuper ? 'block' : 'none';
-  document.getElementById('claimsAdminBlock').style.display = isSuper ? 'block' : 'none';
+  document.getElementById('termsAdminBlock').style.display = 'none'; // 약관·특약 수동 입력은 쓰지 않아 숨김 (서버 데이터는 그대로 보존)
+  document.getElementById('claimsAdminBlock').style.display = 'none'; // 보상사례 수동 입력은 쓰지 않아 숨김 (서버 데이터는 그대로 보존)
   document.getElementById('knowledgeBlock').style.display = isSuper ? 'block' : 'none';
   document.getElementById('adminScopeNote').textContent = isSuper
     ? '전체 지사의 설계사가 보입니다. 승인/거절/승인취소 처리해주세요.'
     : '우리 지사 소속 설계사만 보입니다. 승인/거절/승인취소 처리해주세요.';
   const tasks = [renderAdminUsers()]; // 지사장은 가입 승인 관리만 사용
-  if (isSuper) tasks.push(renderAdminTerms(), renderAdminClaims(), renderAdminBranches(), populateBaBranchSelect(), renderAdminProducts(), renderKnowledge());
+  if (isSuper) tasks.push(renderAdminBranches(), populateBaBranchSelect(), renderAdminProducts(), renderKnowledge());
   await Promise.all(tasks);
 }
 
